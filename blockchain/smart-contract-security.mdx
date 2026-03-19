@@ -134,7 +134,7 @@ Mutation testing "tests your tests" by inserting small, semantics-changing edits
 pip install slither-analyzer
 
 # Run mutation campaign (Foundry)
-slither-mutate ./src/contracts --test-cmd="forge test" &> mutation.results
+slither-mutate ./src/contracts --test-cmd="forge test" &> >(tee mutation.results)
 
 # List available mutators
 slither-mutate --list-mutators
