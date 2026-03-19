@@ -1,0 +1,147 @@
+---
+title: "Cipher Block Chaining (CBC)"
+description: "Deep dive into AES-CBC: how chaining works, why it is malleable, bit-flipping attacks, and the relationship between CBC mode and padding oracle vulnerabilities."
+---
+
+**Cipher Block Chaining (CBC)** is one of the most common AES modes you will encounter in web applications, TLS, and CTF challenges. Understanding its construction — and its weaknesses — is fundamental to applied cryptanalysis.
+
+## How CBC works
+
+### Encryption
+
+```text
+C[0] = Encrypt(P[0] XOR IV)
+C[i] = Encrypt(P[i] XOR C[i-1])   for i > 0
+```
+
+### Decryption
+
+```text
+P[0] = Decrypt(C[0]) XOR IV
+P[i] = Decrypt(C[i]) XOR C[i-1]   for i > 0
+```
+
+This chaining has a critical consequence: **modifying bytes in ciphertext block `C[i-1]` predictably flips bytes in plaintext block `P[i]`**.
+
+## Why CBC is malleable
+
+The decryption formula reveals a direct relationship between the ciphertext and the plaintext of the **next** block:
+
+```text
+P[i] = Decrypt(C[i]) XOR C[i-1]
+```
+
+Flipping bit `j` in `C[i-1]` flips bit `j` in `P[i]`. An attacker who knows `P[i]` can XOR the desired change into `C[i-1]` to get a chosen `P[i]'`.
+
+### Bit-flip exploit
+
+Scenario: a cookie is formatted as `role=user&admin=false`, encrypted with CBC, and the server checks the decrypted value.
+
+```python
+from pwn import *
+
+# We want to flip 'u' (0x75) in 'user' to 'a' (0x61) in the decrypted block
+# P[i] = Decrypt(C[i]) XOR C[i-1]
+# To get P'[i][j] = P[i][j] XOR delta, set C[i-1][j] ^= delta
+
+ciphertext = bytearray(get_cookie())
+
+block_size = 16
+target_block = 1   # block index containing 'role=user' portion
+target_offset = 5  # byte offset of 'u' within that block
+
+current = ord('u')
+desired = ord('a')
+delta   = current ^ desired
+
+ciphertext[target_block * block_size + target_offset] ^= delta
+
+# Submit modified ciphertext — block (target_block - 1) will be garbled,
+# but block target_block decrypts as desired
+send_cookie(bytes(ciphertext))
+```
+
+<Note>
+The block *immediately before* the target (block `target_block - 1`) will decrypt to garbage, because its decryption now uses the modified ciphertext as IV. Plan for this side-effect in the exploit.
+</Note>
+
+## PKCS#7 padding
+
+AES operates on 16-byte blocks. Plaintext is padded to a multiple of 16 bytes using PKCS#7:
+
+```text
+Original: "HELLO WORLD"  (11 bytes)
+Padded:   "HELLO WORLD\x05\x05\x05\x05\x05"  (16 bytes)
+```
+
+The padding byte value equals the number of padding bytes. A full block of padding (\x10 * 16) is added when the plaintext is already block-aligned.
+
+During decryption, the receiver strips the padding and verifies it is valid. If the padding is invalid, many implementations throw an error — creating a **padding oracle**.
+
+## CBC-MAC
+
+CBC-MAC computes an authentication tag as the final output block of CBC encryption with IV=0:
+
+```text
+Tag = last_block( AES_CBC_Encrypt(key, message, IV=0) )
+```
+
+This construction is **only secure for fixed-length messages**. With variable-length messages, an attacker can forge tags.
+
+### Variable-length forgery
+
+Given `T1 = CBC_MAC(key, M1)` and `T2 = CBC_MAC(key, M2)`:
+
+```text
+Forged message: M1 || (M2_block0 XOR T1) || M2_block1 || ...
+Forged tag:     T2  (same as the tag for M2!)
+```
+
+This works because XOR-ing `T1` into the first block of `M2` cancels the CBC state, making the computation continue as if it started fresh for `M2`.
+
+```python
+from Crypto.Cipher import AES
+
+def cbc_mac(key: bytes, msg: bytes) -> bytes:
+    cipher = AES.new(key, AES.MODE_CBC, iv=b'\x00' * 16)
+    ct = cipher.encrypt(msg)  # msg must be block-aligned
+    return ct[-16:]
+
+key = b'supersecretkey!!'
+m1  = b'admin=false     '   # 16 bytes
+m2  = b'admin=true      '   # 16 bytes
+
+t1 = cbc_mac(key, m1)
+t2 = cbc_mac(key, m2)
+
+# Forge tag for m1 || (m2 XOR t1)
+forged_m2 = bytes(a ^ b for a, b in zip(m2, t1))
+forged_msg = m1 + forged_m2
+forged_tag = cbc_mac(key, forged_msg)
+assert forged_tag == t2  # tag matches without knowing the key
+```
+
+## Decrypting with a padding oracle
+
+A **padding oracle** exists when a system reveals (through error message, HTTP status code, or response time) whether a decrypted ciphertext has valid PKCS#7 padding. This leaks one bit of information per query and is enough to:
+
+- Decrypt any ciphertext **without the key** (16 queries per byte, in the worst case 256 each)
+- Encrypt any chosen plaintext (forge ciphertext)
+
+The attack is covered in detail on the [Padding Oracle Attacks](/crypto/padding-oracle-attacks) page.
+
+## Common CBC vulnerabilities in the wild
+
+| Flaw | Risk |
+|---|---|
+| Reused IV | Known-plaintext reveals keystream XOR relationship between messages |
+| Padding oracle | Full decryption and encryption without the key |
+| CBC-MAC with variable-length input | Tag forgery |
+| Missing authentication | Bit-flip attacks modify plaintext undetected |
+| CBC for password storage | Offline dictionary attacks possible |
+
+## Mitigations
+
+- Use **Authenticated Encryption with Associated Data (AEAD)**: AES-GCM, AES-GCM-SIV, or ChaCha20-Poly1305. These provide confidentiality *and* integrity in a single primitive.
+- If CBC must be used, apply **encrypt-then-MAC** (never MAC-then-encrypt) and use a fresh random IV per encryption.
+- Use **constant-time padding validation** to eliminate timing oracles.

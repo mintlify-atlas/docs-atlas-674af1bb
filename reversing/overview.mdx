@@ -1,0 +1,126 @@
+---
+title: "Reversing Overview"
+description: "Introduction to reverse engineering: goals, common targets, and a structured methodology for analysing compiled binaries, malware, and obfuscated code."
+---
+
+Reverse engineering (RE) is the process of understanding a program's behaviour without access to its source code. In a security context this means recovering logic, finding hidden functionality, identifying vulnerabilities, or understanding malware.
+
+## Common targets
+
+<CardGroup cols={2}>
+  <Card title="Malware analysis" icon="bug">
+    Understand what a suspicious binary does: C2 communication, persistence mechanisms, evasion tricks.
+  </Card>
+  <Card title="CTF challenges" icon="flag">
+    Find hidden flags by reversing licence checks, custom crypto, obfuscated logic, or game mechanics.
+  </Card>
+  <Card title="Vulnerability research" icon="magnifying-glass">
+    Identify unsafe functions, integer overflows, or logic flaws in closed-source software.
+  </Card>
+  <Card title="Interoperability" icon="plug">
+    Understand proprietary protocols or file formats to build compatible tooling.
+  </Card>
+</CardGroup>
+
+## Reversing methodology
+
+<Steps>
+  <Step title="Static overview">
+    Run `file`, `strings`, and `checksec` first. Identify the architecture, format (ELF/PE/Mach-O), packing (UPX, custom), and enabled mitigations.
+
+    ```bash
+    file ./target
+    strings ./target | grep -i flag
+    checksec --file=./target
+    ```
+  </Step>
+  <Step title="Disassembly / decompilation">
+    Load the binary into Ghidra, IDA, or Binary Ninja. Rename functions and variables as you understand them. Start from `main` or any well-known entry point.
+  </Step>
+  <Step title="Dynamic analysis">
+    Run the binary under GDB, x64dbg, or Frida. Set breakpoints on interesting functions, inspect registers and memory at key points, and trace system calls with `strace`/`ltrace`.
+  </Step>
+  <Step title="Focus on interesting logic">
+    Follow string references, xrefs to crypto constants (S-boxes, magic numbers like `0x61C88647`), network functions, or comparison instructions that look like key or flag checks.
+  </Step>
+  <Step title="Patch or script">
+    Use Ghidra scripts, IDA Python, or Frida hooks to automate analysis, patch out anti-debug checks, or dump decrypted payloads at runtime.
+  </Step>
+</Steps>
+
+## Key concepts
+
+### Calling conventions
+
+Understanding how arguments are passed is essential to reading disassembly:
+
+| Convention | Arguments | Return value | Used on |
+|---|---|---|---|
+| x86 cdecl | Stack (right-to-left) | EAX | Linux/Windows 32-bit |
+| x86-64 System V | RDI, RSI, RDX, RCX, R8, R9 | RAX | Linux/macOS 64-bit |
+| x86-64 Windows | RCX, RDX, R8, R9 | RAX | Windows 64-bit |
+| ARM64 (AAPCS64) | X0–X7 | X0 | Linux/macOS ARM64 |
+
+### Recognising common patterns
+
+- **String comparisons**: look for `strcmp`, `memcmp`, or XOR loops near conditional jumps.
+- **Crypto constants**: AES S-box starts with `0x63`, SHA-256 uses specific round constants, RC4 has a 256-byte key-scheduling loop.
+- **Anti-debug**: `IsDebuggerPresent`, PTRACE_TRACEME self-check, timing checks with `RDTSC`, or exception-based tricks.
+- **Packers**: a short first section that allocates RWX memory, writes data into it, and jumps — the payload is unpacked at runtime.
+
+## Anti-analysis techniques in malware
+
+Real-world malware uses many tricks to hinder analysis:
+
+<AccordionGroup>
+  <Accordion title="Locale / keyboard guards">
+    Many stealers abort execution on specific locale or keyboard layouts (commonly CIS countries) to avoid analysing researcher machines. The API chain is `GetKeyboardLayout` → `GetLocaleInfoA/W` → compare against a block-list.
+  </Accordion>
+  <Accordion title="Emulator fingerprinting">
+    Malware scans for Defender’s emulator exports (`MpVmp32Entry`, `VFS_Open`, `ThrdMgr_GetCurrentThreadHandle`, etc.). If found, it sleeps for 10–30 minutes before continuing.
+  </Accordion>
+  <Accordion title="Argument gatekeeping">
+    A CLI switch (e.g., `/i:--type=renderer` mimicking Chromium) must be present or the loader exits immediately, preventing sandbox auto-execution.
+  </Accordion>
+  <Accordion title="Process hollowing (RunPE)">
+    Legitimate processes (`RegAsm.exe`, `MSBuild.exe`) are launched suspended, their image unmapped, and a malicious PE written in its place. The payload never touches disk in plain form.
+  </Accordion>
+</AccordionGroup>
+
+## Language-specific tips
+
+<Tabs>
+  <Tab title=".NET">
+    Use **dnSpy** or **ILSpy** to decompile MSIL back to C#. For debugging, enable `DebuggableAttribute` in the assembly and attach dnSpy to the IIS/process.
+
+    ```csharp
+    // Instrument with dnSpy to log values at runtime
+    File.AppendAllText(@"C:\temp\debug.txt", "value: " + variable + "\n");
+    ```
+  </Tab>
+  <Tab title="Java / Android">
+    Use **jadx** or **jd-gui** to decompile `.class`/`.dex` files back to readable Java.
+  </Tab>
+  <Tab title="Rust">
+    Rust binaries retain mangled symbol names. Search for `::main` to find the entry point. Cross-reference crate names via `cargo` metadata strings.
+  </Tab>
+  <Tab title="Go">
+    Use the **IDAGolangHelper** plugin to restore function names. Go binaries statically link the runtime, making them large but also ensuring standard library symbols are present.
+  </Tab>
+  <Tab title="Delphi">
+    Use **IDR** (Interactive Delphi Reconstructor) or the **IDA-For-Delphi** plugin to recover class structures and virtual method tables.
+  </Tab>
+</Tabs>
+
+## Quick tool reference
+
+| Tool | Category | Notes |
+|---|---|---|
+| Ghidra | Disassembler / decompiler | Free, scriptable, great for large binaries |
+| IDA Pro / Free | Disassembler / decompiler | Industry standard; free version covers x86/x64 |
+| Binary Ninja | Disassembler / decompiler | Strong API, good for automation |
+| x64dbg / x32dbg | Debugger (Windows) | Plugin ecosystem, ScyllaHide for anti-anti-debug |
+| GDB + pwndbg/GEF | Debugger (Linux) | Heap-aware, ROP-aware |
+| Frida | Dynamic instrumentation | Inject JS hooks into any process, cross-platform |
+| radare2 / Cutter | Multi-tool | CLI + GUI; good for shellcode analysis |
+| Detect-It-Easy (DIE) | Packer/compiler ID | Recognises packers, compilers, protectors |

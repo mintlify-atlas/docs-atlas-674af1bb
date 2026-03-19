@@ -1,0 +1,199 @@
+---
+title: "Smart Contract Security"
+description: "Common smart contract vulnerabilities, auditing methodology, mutation testing with Slither, and how to identify reentrancy, access control, and logic flaws in Solidity."
+---
+
+Smart contracts are immutable once deployed and control real funds. A single bug can lead to irreversible loss. This page covers the most common vulnerability classes and the tooling used to find them.
+
+## Common vulnerability classes
+
+### Reentrancy
+
+A contract calls an external address before updating its own state. The external address calls back into the original contract before the state update completes, draining funds.
+
+```solidity
+// VULNERABLE: updates balance AFTER transferring ETH
+function withdraw(uint256 amount) external {
+    require(balances[msg.sender] >= amount);
+    (bool success, ) = msg.sender.call{value: amount}("");  // re-entry here
+    require(success);
+    balances[msg.sender] -= amount;  // too late
+}
+
+// FIXED: update state BEFORE transferring
+function withdraw(uint256 amount) external {
+    require(balances[msg.sender] >= amount);
+    balances[msg.sender] -= amount;  // update first
+    (bool success, ) = msg.sender.call{value: amount}("");
+    require(success);
+}
+```
+
+**Mitigation**: Checks-Effects-Interactions pattern, ReentrancyGuard from OpenZeppelin.
+
+### Integer overflow / underflow
+
+Prior to Solidity 0.8.0, arithmetic wrapped silently. A balance of `0` decremented by `1` becomes `2^256 - 1`.
+
+```solidity
+// Solidity < 0.8.0 — VULNERABLE
+uint256 balance = 0;
+balance -= 1;  // wraps to 2**256 - 1
+
+// Solidity >= 0.8.0: arithmetic reverts on overflow/underflow by default
+// For older code, use SafeMath or upgrade the compiler
+```
+
+### Access control
+
+Missing or incorrect access control allows unauthorised users to call privileged functions.
+
+```solidity
+// VULNERABLE: no access control on mint
+function mint(address to, uint256 amount) external {
+    _mint(to, amount);  // anyone can mint unlimited tokens
+}
+
+// FIXED:
+function mint(address to, uint256 amount) external onlyOwner {
+    _mint(to, amount);
+}
+```
+
+**Common patterns**: missing `onlyOwner`, unprotected `initialize()` in proxy contracts (can be called by anyone before the owner does), `tx.origin` instead of `msg.sender`.
+
+### Oracle manipulation / flash loan attacks
+
+On-chain price oracles that use spot reserves (e.g., Uniswap V2 `getAmounts`) can be manipulated in a single transaction using a flash loan:
+
+<Steps>
+  <Step title="Borrow a large amount">
+    Borrow millions of tokens from a flash loan provider (Aave, Uniswap V3) at no upfront cost.
+  </Step>
+  <Step title="Manipulate the oracle">
+    Dump the borrowed tokens into the pool, crashing the price in the pool's reserves.
+  </Step>
+  <Step title="Exploit the protocol">
+    The vulnerable protocol reads the manipulated price as collateral value and allows overcollateralised borrowing or liquidation.
+  </Step>
+  <Step title="Repay and profit">
+    Repay the flash loan in the same transaction. The profit is the difference between the manipulated trade and market price.
+  </Step>
+</Steps>
+
+**Mitigation**: Use time-weighted average price (TWAP) oracles, require multiple block confirmation, or use Chainlink price feeds.
+
+### Delegatecall proxy vulnerabilities
+
+`delegatecall` executes code from another contract in the caller’s storage context. Proxy patterns rely on this for upgradeability, but storage collisions can allow an attacker to overwrite the implementation address.
+
+```solidity
+// Storage layout collision: if proxy and implementation both have
+// a variable at slot 0, writing to one overwrites the other
+contract Proxy {
+    address public implementation;  // slot 0
+}
+
+contract Implementation {
+    address public owner;  // slot 0 in delegatecall context = overwrites proxy.implementation
+}
+```
+
+**Mitigation**: EIP-1967 unstructured storage slots, OpenZeppelin TransparentProxy or UUPS.
+
+## Auditing methodology
+
+<Steps>
+  <Step title="Static analysis">
+    Run Slither to find common patterns automatically:
+
+    ```bash
+    slither ./src/contracts
+    ```
+  </Step>
+  <Step title="Manual code review">
+    Read every function with external calls. Check: who can call this? What state changes happen before external calls? What is the trust model?
+  </Step>
+  <Step title="Unit and fuzz testing">
+    Write tests that cover boundary conditions — zero amounts, maximum uint256, reentrancy callers, etc. Use Foundry’s `vm.fuzz` for property-based testing.
+  </Step>
+  <Step title="Mutation testing">
+    Use `slither-mutate` to verify your tests actually catch behavioural changes (see below).
+  </Step>
+  <Step title="Economic analysis">
+    Model flash loan attack scenarios. Identify price oracle dependencies. Check for MEV (Miner Extractable Value) risks.
+  </Step>
+</Steps>
+
+## Mutation testing with slither-mutate
+
+Mutation testing "tests your tests" by inserting small, semantics-changing edits (mutants) into the source and re-running the test suite. If the tests still pass after a mutation, there is a blind spot.
+
+```bash
+# Install Slither v0.10.2+
+pip install slither-analyzer
+
+# Run mutation campaign (Foundry)
+slither-mutate ./src/contracts --test-cmd="forge test" &> mutation.results
+
+# List available mutators
+slither-mutate --list-mutators
+```
+
+### Common mutation operators
+
+| Operator | Example change |
+|---|---|
+| Operator replacement | `>=` → `>`, `+` → `-` |
+| Constant replacement | `1 ether` → `0` |
+| Condition negation | `if (x > 0)` → `if (!(x > 0))` |
+| Comment replacement (CR) | Entire line → `//comment` |
+| Revert replacement | Statement → `revert()` |
+
+### Understanding the output
+
+```text
+INFO:Slither-Mutate:[CR] Line 33: 'balances[msg.sender] -= amount' ==> '//balances[msg.sender] -= amount' --> UNCAUGHT
+```
+
+`UNCAUGHT` means the tests passed even with that line commented out — a missing assertion.
+
+### Triage workflow
+
+<Steps>
+  <Step title="Inspect surviving mutants">
+    Apply the mutant locally and run a focused test to understand what is not being asserted.
+  </Step>
+  <Step title="Add state assertions">
+    Do not only check return values — verify post-state: balances, total supply, authorisation effects, emitted events.
+  </Step>
+  <Step title="Improve mocks">
+    Replace overly permissive mocks with realistic behaviour that enforces transfer amounts and failure paths.
+  </Step>
+  <Step title="Add fuzz invariants">
+    Conservation of value, non-negative balances, monotonic supply — these catch entire classes of mutations.
+  </Step>
+</Steps>
+
+### Case study: Arkis DeFi protocol
+
+```text
+INFO:Slither-Mutate:[CR] Line 33: 
+  'cmdsToExecute.last().value = _cmd.value' 
+  ==> '//cmdsToExecute.last().value = _cmd.value' --> UNCAUGHT
+```
+
+Commenting out the assignment didn’t break any tests. Root cause: the code trusted a user-controlled `_cmd.value` instead of validating actual token transfers. An attacker could desynchronise expected vs actual transfers to drain funds. **Severity: High**.
+
+## Solidity security checklist
+
+- [ ] All `external` calls are made after state updates (Checks-Effects-Interactions)
+- [ ] `ReentrancyGuard` on functions that handle ETH or tokens
+- [ ] All `initializer` functions are protected against re-initialisation
+- [ ] No `tx.origin` for authentication — use `msg.sender`
+- [ ] Price oracles use TWAP, not spot reserves
+- [ ] No unprotected `selfdestruct` or `delegatecall` to user-supplied addresses
+- [ ] Integer arithmetic uses Solidity 0.8+ or SafeMath
+- [ ] Storage layout is documented and consistent across proxy/implementation
+- [ ] Events are emitted for all state-changing functions
+- [ ] Access control roles are documented and tested

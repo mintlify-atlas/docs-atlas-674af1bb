@@ -1,0 +1,170 @@
+---
+title: "Cryptography Overview"
+description: "Practical cryptography for security research and CTFs: how to classify primitives, identify weaknesses, and apply known attacks to symmetric ciphers, hashes, and public-key schemes."
+---
+
+This section focuses on **practical cryptography for offensive security and CTFs**: how to quickly recognise common patterns, pick the right tools, and apply known attack templates. The goal is not to prove security proofs but to break things.
+
+## Quick classification workflow
+
+When you encounter an unknown crypto challenge or sample:
+
+1. **What is the primitive?** Block cipher, stream cipher, hash, MAC, or public-key?
+2. **What do you control?** Plaintext oracle, ciphertext, key material, IV/nonce?
+3. **What is leaked?** Padding errors, timing differences, error messages, nonce reuse?
+4. **Which mode/construction is used?** ECB, CBC, CTR, GCM, RSA-PKCS1v1.5, etc.?
+
+## Toolchain setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install pycryptodome gmpy2 sympy pwntools
+# SageMath is often essential for lattice and ECC attacks
+# https://www.sagemath.org/
+```
+
+## Symmetric crypto
+
+<CardGroup cols={2}>
+  <Card title="Cipher Block Chaining (CBC)" icon="link" href="/crypto/cipher-block-chaining">
+    Malleability, padding oracle attacks, bit-flip exploits.
+  </Card>
+  <Card title="Padding Oracle Attacks" icon="unlock" href="/crypto/padding-oracle-attacks">
+    Decrypt arbitrary ciphertext and forge messages without the key.
+  </Card>
+</CardGroup>
+
+### AES modes at a glance
+
+| Mode | Deterministic? | Malleable? | Primary weakness |
+|---|---|---|---|
+| **ECB** | Yes | Yes | Equal blocks → equal ciphertext; pattern leakage |
+| **CBC** | No (IV) | Yes | Bit-flip in `C[i-1]` flips known bits in `P[i]`; padding oracle |
+| **CTR** | No (nonce) | Yes | Nonce reuse → XOR of two plaintexts; no integrity |
+| **GCM** | No (nonce) | Yes* | Nonce reuse breaks both confidentiality and integrity |
+
+### ECB detection and exploitation
+
+ECB encrypts each 16-byte block independently: equal plaintext blocks produce equal ciphertext blocks.
+
+```python
+from Crypto.Cipher import AES
+
+def detect_ecb(ciphertext: bytes, block_size: int = 16) -> bool:
+    blocks = [ciphertext[i:i+block_size]
+              for i in range(0, len(ciphertext), block_size)]
+    return len(blocks) != len(set(blocks))  # duplicate blocks → ECB
+```
+
+**Cut-and-paste attack**: craft a plaintext so a block containing `admin` aligns to a block boundary, encrypt it, then swap that ciphertext block into the position of the `user` field in a legitimate token.
+
+### CTR and GCM nonce reuse
+
+If two messages are encrypted under the same key and nonce:
+
+```text
+C1 = P1 XOR keystream
+C2 = P2 XOR keystream
+=> C1 XOR C2 = P1 XOR P2
+```
+
+With any known-plaintext segment, the full keystream can be recovered for those offsets:
+
+```python
+keystream = bytes(c ^ p for c, p in zip(ciphertext, known_plaintext))
+decrypted = bytes(c ^ k for c, k in zip(target_ciphertext, keystream))
+```
+
+## Hash attacks
+
+### Length extension
+
+Many hash constructions (MD5, SHA-1, SHA-256) are vulnerable to **length extension**: given `H(secret || message)` and the length of `secret`, an attacker can compute `H(secret || message || padding || extension)` without knowing `secret`.
+
+```bash
+# Using hashpump
+hashpump -s <original_hash> -d <original_data> -a <data_to_add> -k <key_length>
+```
+
+<Warning>
+HMAC is immune to length extension attacks. Always use HMAC for message authentication, not a bare hash.
+</Warning>
+
+### Hash cracking quick reference
+
+```bash
+# Identify hash type
+hashid '<hash_value>'
+
+# Crack with hashcat
+hashcat -m 0   hash.txt wordlist.txt   # MD5
+hashcat -m 100 hash.txt wordlist.txt   # SHA-1
+hashcat -m 1400 hash.txt wordlist.txt  # SHA-256
+
+# Online: crackstation.net
+```
+
+## Public-key crypto
+
+### RSA common mistakes
+
+| Scenario | Attack |
+|---|---|---|
+| Small public exponent `e=3`, small message | Cube-root attack (no padding) |
+| Same message, different moduli, same small `e` | Coppersmith / Håstad broadcast |
+| Shared prime factor between two moduli | `gcd(n1, n2)` recovers `p` immediately |
+| Weak random — close primes | Fermat factorisation |
+| PKCS#1 v1.5 padding oracle | Bleichenbacher attack |
+
+```python
+import math
+
+# Check if two RSA moduli share a prime factor
+n1 = 0xdeadbeef_...
+n2 = 0xcafebabe_...
+p  = math.gcd(n1, n2)
+if p != 1:
+    q1 = n1 // p
+    q2 = n2 // p
+    print(f"Common factor: {p}")
+```
+
+## MAC forgery
+
+### CBC-MAC variable-length forgery
+
+CBC-MAC is secure only for **fixed-length** messages. If an attacker obtains tags for two messages and can concatenate them, they can forge a tag for the concatenation without knowing the key.
+
+```text
+T1 = CBC_MAC(key, M1)     # known
+T2 = CBC_MAC(key, M2)     # known
+T3 = CBC_MAC(key, M1 || (M2[0] XOR T1) || M2[1:])  # forgeable!
+```
+
+Always use HMAC-SHA256 or AES-CMAC for variable-length message authentication.
+
+## Stream ciphers and XOR
+
+Almost every stream cipher or custom encryption scheme reduces to:
+
+```text
+ciphertext = plaintext XOR keystream
+```
+
+With keystream reuse or known plaintext, decryption is trivial:
+
+```python
+# Recover keystream from known plaintext at position i
+keystream_segment = bytes(c ^ p for c, p in zip(ciphertext[i:j], known[i:j]))
+
+# Apply to decrypt another ciphertext at the same offsets
+decrypted = bytes(c ^ k for c, k in zip(target[i:j], keystream_segment))
+```
+
+**RC4**: encrypt and decrypt are the same operation. If you have an encryption oracle, use it as a decryption oracle.
+
+## Recommended reading
+
+- Trail of Bits — *Carelessness versus craftsmanship in cryptography* (2026)
+- Cryptopals challenges (cryptopals.com) — practical exercises covering all the above attacks
+- SageMath documentation — for lattice and ECC attacks

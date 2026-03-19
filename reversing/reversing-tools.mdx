@@ -1,0 +1,179 @@
+---
+title: "Reversing Tools"
+description: "Practical guide to the most important reversing tools: disassemblers, debuggers, shellcode analysis, decompilers for specific languages, and SMT solvers."
+---
+
+Choosing the right tool for the binary format and analysis goal dramatically accelerates reverse engineering. This page covers the most commonly used tools with practical usage notes.
+
+## Disassemblers and decompilers
+
+### Ghidra
+
+Free and open-source tool from the NSA. Supports x86, ARM, MIPS, PowerPC, and many more architectures. The built-in decompiler produces readable C-like pseudocode.
+
+```bash
+# Run headless analysis (useful in CI or scripts)
+ghidra_headless /tmp/project MyProject -import ./binary -postScript PrintASM.java
+```
+
+### IDA Pro / IDA Free
+
+Industry-standard disassembler. IDA Free handles x86/x64 ELF and PE files. Use **F5** to decompile the current function with the Hex-Rays decompiler.
+
+### Binary Ninja
+
+Strong Python/C++ API for automation. Particularly useful for writing custom analysis passes.
+
+## Debuggers
+
+### GDB with GEF or pwndbg (Linux)
+
+```bash
+# Install GEF
+bash -c "$(curl -fsSL https://gef.blah.cat/sh)"
+
+# Useful GEF commands
+pattern create 200          # generate cyclic pattern
+pattern search $rsp         # find offset from crash
+heap chunks                 # visualise heap allocations
+bins                        # show free bin contents
+checksec                    # show binary protections
+```
+
+### x64dbg / x32dbg (Windows)
+
+Open-source Windows debugger with a plugin ecosystem. Use **ScyllaHide** to bypass common anti-debug checks.
+
+To debug a DLL:
+1. Load `rundll32.exe` as the executable
+2. Set the command line: `"C:\Windows\SysWOW64\rundll32.exe" "target.dll",DLLMain`
+3. Enable *Options → Settings → DLL Entry* to break on `DllMain`
+
+## .NET reversing
+
+### dnSpy / dnSpyEx
+
+Decompiles and **allows editing** .NET assemblies in-place. Right-click a method and choose **Modify Method** to patch logic without recompiling from source.
+
+Enabling debug symbols for runtime debugging:
+
+```csharp
+// Change AssemblyInfo.cs attribute from:
+[assembly: Debuggable(DebuggableAttribute.DebuggingModes.IgnoreSymbolStoreSequencePoints)]
+// To:
+[assembly: Debuggable(
+    DebuggableAttribute.DebuggingModes.Default |
+    DebuggableAttribute.DebuggingModes.DisableOptimizations |
+    DebuggableAttribute.DebuggingModes.IgnoreSymbolStoreSequencePoints |
+    DebuggableAttribute.DebuggingModes.EnableEditAndContinue)]
+```
+
+Then: *File → Save Module…*, restart the app, and attach dnSpy via *Debug → Attach to Process*.
+
+### ILSpy
+
+Lightweight .NET decompiler. Available as a standalone app and as a Visual Studio Code extension (search "ILSpy" in the extensions marketplace).
+
+### dotPeek (JetBrains)
+
+Excels at decompiling Xamarin and restoring projects to `.csproj` format for reimport into Visual Studio.
+
+## Java / Android reversing
+
+```bash
+# Decompile an APK or JAR
+java -jar jadx-gui.jar target.apk
+
+# CLI decompilation
+jadx -d output_dir target.apk
+```
+
+For Android, **apktool** decodes resources and smali bytecode; **jadx** goes further by lifting smali to Java.
+
+## WebAssembly (Wasm)
+
+| Direction | Tool |
+|---|---|
+| Wasm → Wat (text) | https://webassembly.github.io/wabt/demo/wasm2wat/ |
+| Wat → Wasm (binary) | https://webassembly.github.io/wabt/demo/wat2wasm/ |
+| Wasm decompiler | JEB (commercial), wasmdec |
+
+## Shellcode analysis
+
+### Blobrunner
+
+[Blobrunner](https://github.com/OALabs/BlobRunner) allocates raw shellcode into a memory region, prints the address, and pauses. Attach IDA or x64dbg, set a breakpoint at the printed address, and resume.
+
+### scdbg
+
+Emulates shellcode execution and reports which API calls it makes — useful for quick triage without running the shellcode on a live system.
+
+```bash
+scdbg.exe -f shellcode.bin        # basic info
+scdbg.exe -f shellcode.bin -r     # analysis report at end
+scdbg.exe -f shellcode.bin -d     # dump decoded (unpacked) shellcode
+```
+
+### Cutter (radare2 GUI)
+
+Open the shellcode as a raw binary and use the **Emulate** feature to step through instructions and inspect registers interactively.
+
+### CyberChef
+
+For quick disassembly of small shellcode blobs without running them:
+
+```text
+Recipe: To Hex('Space', 0) -> Disassemble x86 ('32', 'Full x86', 16, 0, true, true)
+```
+
+## SMT solvers — Z3
+
+Z3 (and the `angr` binary analysis framework built on top of it) can automatically solve for inputs that satisfy a set of constraints — perfect for key-check or flag-check functions.
+
+```python
+from z3 import *
+
+# Example: find x such that (x * 37 + 5) % 256 == 0xab
+x = BitVec('x', 8)
+s = Solver()
+s.add((x * 37 + 5) % 256 == 0xab)
+if s.check() == sat:
+    print(s.model()[x])  # prints the solution
+```
+
+Angr automates this for full binary paths:
+
+```python
+import angr
+
+project = angr.Project('./crackme', auto_load_libs=False)
+simgr = project.factory.simgr()
+simgr.explore(find=0x401234, avoid=0x401250)  # address of success/failure
+if simgr.found:
+    print(simgr.found[0].posix.dumps(0))  # dump stdin that reaches 'found'
+```
+
+## Obfuscation-specific tools
+
+### Movfuscator
+
+Obfuscates all instructions into `mov` instructions. Use **demovfuscator** (with libcapstone and libz3) to reverse it.
+
+```bash
+apt-get install libcapstone-dev libz3-dev
+demovfuscator ./movfuscated_binary
+```
+
+### Game Boy Advance
+
+| Tool | Purpose |
+|---|---|
+| no$gba (debug build) | Full debugger UI with breakpoints |
+| mGBA | CLI debugger |
+| gba-ghidra-loader | Ghidra plugin for GBA ROM analysis |
+
+## Useful online resources
+
+- **Decompiler Explorer** (dogbolt.org): compare output of Ghidra, IDA, Binary Ninja, and others side-by-side on the same binary.
+- **CyberChef**: encode/decode/transform/disassemble data in browser.
+- **godbolt.org**: compile C/C++ and inspect generated assembly for any architecture.

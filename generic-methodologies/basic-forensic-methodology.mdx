@@ -1,0 +1,158 @@
+---
+title: "Basic Forensic Methodology"
+description: "Structured approach to digital forensics covering image acquisition, malware analysis, filesystem inspection, memory dumps, pcap analysis, and anti-forensic awareness."
+---
+
+## Overview
+
+Digital forensics is the practice of collecting, preserving, and analyzing digital evidence. This methodology provides a structured approach applicable to incident response, CTF challenges, and professional investigations.
+
+<Note>
+The steps below are not strictly sequential — malware analysis techniques, for example, can be applied independently to any file, memory image, or pcap at any point in the investigation.
+</Note>
+
+## Core Forensic Workflow
+
+<Steps>
+  <Step title="Image Acquisition and Mounting">
+    Create a forensic image of the target drive or device before doing anything else. This preserves the original evidence.
+
+    Key tools and techniques:
+    - `dd` / `dcfldd` — bit-for-bit disk imaging
+    - `ewfacquire` — acquire to E01 (Expert Witness Format)
+    - `FTK Imager` — GUI-based acquisition and verification
+    - Verify integrity with SHA256/MD5 hashes before and after imaging
+
+    ```bash
+    # Create a raw image
+    dd if=/dev/sda of=/mnt/evidence/disk.img bs=512 status=progress
+
+    # Hash verification
+    sha256sum /dev/sda
+    sha256sum /mnt/evidence/disk.img
+    ```
+  </Step>
+
+  <Step title="Malware Analysis">
+    Analyze suspicious files independently of the image if needed. Techniques include:
+
+    - **Static analysis:** `file`, `strings`, `binwalk`, PE/ELF header inspection
+    - **Dynamic analysis:** Run in a sandbox (Cuckoo, Any.run, Cape)
+    - **Network analysis:** Monitor outbound connections in controlled environment
+    - **YARA rules:** Pattern matching for known malware families
+
+    ```bash
+    file suspicious_binary
+    strings suspicious_binary | grep -E "http|cmd|powershell"
+    binwalk -e firmware.bin
+    ```
+  </Step>
+
+  <Step title="Inspect Partitions and File Systems">
+    Analyze partitions, file systems, and recover deleted files from forensic images:
+
+    ```bash
+    # List partitions
+    fdisk -l disk.img
+    mmls disk.img
+
+    # Mount a partition from image
+    mount -o loop,ro,offset=$((512*2048)) disk.img /mnt/forensic
+
+    # File system analysis with Autopsy or Sleuth Kit
+    fls -r -m / disk.img > file_list.txt
+    ```
+  </Step>
+
+  <Step title="OS-Specific Artifact Analysis">
+    Different operating systems store evidence in different locations:
+
+    - **Windows:** Registry hives, Event Logs, Prefetch, LNK files, SRUM, browser artifacts
+    - **Linux:** `/var/log/`, bash history, `/etc/passwd`, cron jobs, systemd journals
+    - **Docker:** Container layers, volume mounts, runtime logs
+    - **iOS Backups:** SQLite databases containing messages, contacts, location data
+  </Step>
+
+  <Step title="Deep Inspection of Specific File Types">
+    Suspicious files require type-specific analysis:
+
+    - **Office documents:** Macro extraction with `oledump`, `oletools`
+    - **PDFs:** `peepdf`, `pdf-parser` for JavaScript and embedded objects
+    - **Images:** Steganography tools (`steghide`, `zsteg`, `exiftool`)
+    - **Browser artifacts:** History, cookies, cached passwords from Chrome/Firefox/Edge profiles
+  </Step>
+
+  <Step title="Memory Dump Analysis">
+    Volatile memory contains running processes, network connections, encryption keys, and injected code:
+
+    ```bash
+    # Volatility 3 examples
+    python3 vol.py -f memory.dmp windows.pslist
+    python3 vol.py -f memory.dmp windows.netscan
+    python3 vol.py -f memory.dmp windows.malfind
+    python3 vol.py -f memory.dmp windows.dumpfiles --pid <PID>
+    ```
+  </Step>
+
+  <Step title="PCAP Inspection">
+    Network captures reveal communications, exfiltration, and C2 activity:
+
+    ```bash
+    # Wireshark display filters
+    # HTTP POST requests
+    http.request.method == "POST"
+
+    # DNS queries
+    dns.qry.name contains "suspicious"
+
+    # Extract files from PCAP
+    tcpflow -r capture.pcap
+    tshark -r capture.pcap --export-objects http,./output
+    ```
+  </Step>
+
+  <Step title="Anti-Forensic Technique Awareness">
+    Attackers may attempt to cover their tracks. Common anti-forensic techniques include:
+
+    - **Timestomping** — modifying file MAC times
+    - **Log deletion** — clearing Windows Event Logs, bash history
+    - **Encryption** — LUKS, BitLocker, VeraCrypt volumes
+    - **Steganography** — hiding data inside images or audio
+    - **Secure deletion** — overwriting free space
+    - **Living-off-the-land** — using built-in OS tools to avoid dropping binaries
+  </Step>
+</Steps>
+
+## Key Forensic Areas
+
+<CardGroup cols={2}>
+  <Card title="Windows Forensics" icon="windows">
+    Registry analysis, Event Log parsing, Prefetch files, browser artifacts, LNK files, and NTFS artifacts like `$MFT`, `$LogFile`, and VSS shadow copies.
+  </Card>
+  <Card title="Linux Forensics" icon="terminal">
+    Log files in `/var/log/`, bash/zsh history, cron jobs, systemd journals, SSH authorized keys, and `/proc` artifacts.
+  </Card>
+  <Card title="Memory Analysis" icon="microchip">
+    Process listings, network connections, injected shellcode, encryption keys in memory, and credential material using Volatility.
+  </Card>
+  <Card title="PCAP Analysis" icon="network-wired">
+    Protocol dissection, credential extraction, C2 traffic identification, DNS tunneling detection, and file carving from network streams.
+  </Card>
+  <Card title="Docker Forensics" icon="docker">
+    Container layer analysis, volume inspection, Docker daemon logs, and runtime configuration artifacts.
+  </Card>
+  <Card title="Browser Artifacts" icon="globe">
+    History, downloads, cookies, cached credentials, extensions, and session data from major browsers.
+  </Card>
+</CardGroup>
+
+## Threat Hunting
+
+Proactive threat hunting complements reactive forensics. Use **file integrity monitoring** to detect changes to critical files and directories in real time, and build correlation rules to identify indicators of compromise (IoCs) before an alert fires.
+
+```bash
+# Example: Monitor critical Linux directories with auditd
+auditctl -w /etc/passwd -p wa -k passwd_changes
+auditctl -w /etc/shadow -p wa -k shadow_changes
+auditctl -w /bin -p x -k binary_execution
+```

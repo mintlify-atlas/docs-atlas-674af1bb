@@ -1,0 +1,234 @@
+---
+title: "External Recon Methodology"
+description: "Comprehensive guide to discovering company assets, domains, subdomains, cloud resources, emails, and credential leaks from the outside."
+---
+
+## Overview
+
+External reconnaissance is the process of discovering everything a company owns that is publicly accessible on the internet — before touching any target system. The goal is to build a complete picture of the attack surface.
+
+## Asset Discovery
+
+### Acquisitions
+
+Start by finding all companies owned by the main company (subsidiaries expand scope):
+
+- [Crunchbase](https://www.crunchbase.com) — search company → click "acquisitions"
+- **Wikipedia** — search the company's page for acquisition history
+- **SEC/EDGAR** filings and investor relations pages (for public companies)
+- [OpenCorporates](https://opencorporates.com) and the [GLEIF LEI database](https://www.gleif.org)
+
+### ASNs (IP Ranges)
+
+An **Autonomous System Number (ASN)** identifies an organization's IP ranges. Find them by company name, IP, or domain:
+
+- [bgp.he.net](https://bgp.he.net)
+- [bgpview.io](https://bgpview.io)
+- [ipinfo.io](https://ipinfo.io)
+- Regional registries: [AFRINIC](https://www.afrinic.net), [ARIN](https://www.arin.net), [APNIC](https://www.apnic.net), [LACNIC](https://www.lacnic.net), [RIPE NCC](https://www.ripe.net)
+
+```bash
+# Enumerate ASNs with amass
+amass intel -org tesla
+amass intel -asn 8911,50313,394161
+
+# BBOT automatically summarizes ASNs at scan end
+bbot -t tesla.com -f subdomain-enum
+```
+
+## Domains
+
+### Reverse DNS
+
+```bash
+dnsrecon -r <DNS_Range> -n <IP_DNS>
+dnsrecon -d facebook.com -r 157.240.221.35/24
+dnsrecon -r 157.240.221.35/24 -n 1.1.1.1
+```
+
+### Reverse Whois
+
+Search for other assets linked to the same organization name, address, or email:
+
+- [viewdns.info/reversewhois](https://viewdns.info/reversewhois/) — Free
+- [reversewhois.io](https://www.reversewhois.io) — Free
+- [whoxy.com](https://www.whoxy.com) — Free web, paid API
+- [DomLink](https://github.com/vysecurity/DomLink) — Automation tool
+
+```bash
+amass intel -d tesla.com -whois
+```
+
+### Trackers & Favicon Hashes
+
+Find related domains by sharing the same Google Analytics ID, Adsense ID, or favicon hash:
+
+- [BuiltWith](https://builtwith.com), [SpyOnWeb](http://spyonweb.com), [Publicwww](https://publicwww.com)
+
+```bash
+# Favicon hash search via Shodan
+shodan search org:"Target" http.favicon.hash:116323821 --fields ip_str,port
+```
+
+```python
+import mmh3, requests, codecs
+
+def fav_hash(url):
+    response = requests.get(url)
+    favicon = codecs.encode(response.content, "base64")
+    fhash = mmh3.hash(favicon)
+    print(f"{url} : {fhash}")
+    return fhash
+```
+
+### Certificate Transparency
+
+Discover domains via CT logs:
+
+- [crt.sh](https://crt.sh)
+- [certspotter.com](https://certspotter.com)
+- [search.censys.io](https://search.censys.io)
+- [chaos.projectdiscovery.io](https://chaos.projectdiscovery.io)
+
+## Subdomains
+
+### OSINT Tools
+
+```bash
+# BBOT — comprehensive subdomain enumeration
+bbot -t tesla.com -f subdomain-enum
+bbot -t tesla.com -f subdomain-enum -rf passive  # passive only
+
+# Amass
+amass enum -d tesla.com
+amass enum -active -ip -d tesla.com
+
+# Subfinder
+subfinder -d tesla.com -silent
+
+# theHarvester
+theHarvester -d tesla.com -b "anubis,bing,crtsh,dnsdumpster,google,virustotal"
+
+# assetfinder
+assetfinder --subs-only tesla.com
+```
+
+### DNS Brute Force
+
+```bash
+# massdns — fast but may have false positives
+sed 's/$/.domain.com/' subdomains.txt > bf-subdomains.txt
+./massdns -r resolvers.txt -w /tmp/results.txt bf-subdomains.txt
+
+# gobuster
+gobuster dns -d mysite.com -t 50 -w subdomains.txt
+
+# puredns
+puredns bruteforce all.txt domain.com
+
+# shuffledns
+shuffledns -d example.com -list example-subdomains.txt -r resolvers.txt
+```
+
+### Permutation Generation
+
+Generate subdomain mutations to find more targets:
+
+```bash
+# dnsgen
+cat subdomains.txt | dnsgen -
+
+# alterx
+cat subdomains.txt | alterx | dnsx -silent
+
+# gotator
+gotator -sub subdomains.txt -silent
+```
+
+### Virtual Host Brute Force
+
+Fuzz the `Host` header to find hidden vhosts:
+
+```bash
+ffuf -u http://10.10.10.10 -H "Host: FUZZ.example.com" \
+  -w /opt/SecLists/Discovery/DNS/subdomains-top1million-20000.txt -ac
+
+gobuster vhost -u https://mysite.com -t 50 -w subdomains.txt
+```
+
+## IPs, Web Servers, and Cloud Assets
+
+<Steps>
+  <Step title="Collect All IPs">
+    Gather IPs from discovered ranges, domains, and subdomains. Check [SecurityTrails](https://securitytrails.com) for historical IP records to find CloudFlare bypass IPs.
+  </Step>
+  <Step title="Port Scan Non-CDN IPs">
+    Run port scans against IPs not belonging to CDNs to find running services. Check each service against this book's guides.
+
+    ```bash
+    masscan -p80,443,8000-8100,8443 199.66.11.0/24
+    ```
+  </Step>
+  <Step title="Screenshot All Web Servers">
+    Take screenshots to get a quick visual overview of discovered web apps.
+
+    Tools: [EyeWitness](https://github.com/FortyNorthSecurity/EyeWitness), [Gowitness](https://github.com/sensepost/gowitness), [Aquatone](https://github.com/michenriksen/aquatone)
+  </Step>
+  <Step title="Search Cloud Assets">
+    Use company keywords and wordlists to find open S3 buckets, cloud functions, and storage:
+
+    Tools: [cloud_enum](https://github.com/initstring/cloud_enum), [CloudScraper](https://github.com/jordanpotti/CloudScraper), [S3Scanner](https://github.com/sa7mon/S3Scanner)
+  </Step>
+</Steps>
+
+## Emails, Credential Leaks, and Secret Leaks
+
+<CardGroup cols={2}>
+  <Card title="Email Discovery" icon="envelope">
+    - [theHarvester](https://github.com/laramies/theHarvester)
+    - [hunter.io](https://hunter.io) (free version)
+    - [snov.io](https://app.snov.io) (free version)
+    - [minelead.io](https://minelead.io) (free version)
+  </Card>
+  <Card title="Credential Leaks" icon="lock-open">
+    - [leak-lookup.com](https://leak-lookup.com)
+    - [dehashed.com](https://www.dehashed.com)
+    - [Leakos](https://github.com/carlospolop/Leakos) + gitleaks for GitHub repos
+  </Card>
+  <Card title="GitHub Leaks" icon="code-branch">
+    Search public repos of the company and its developers for exposed credentials and API keys.
+
+    ```bash
+    # Run gitleaks on organization repos
+    gitleaks detect --source=./org-repos
+    ```
+  </Card>
+  <Card title="Google Dorks" icon="magnifying-glass">
+    Use the [Google Hacking Database](https://www.exploit-db.com/google-hacking-database) or tools like [Gorks](https://github.com/carlospolop/Gorks) to automate dork searches.
+  </Card>
+</CardGroup>
+
+## Full Recon Automation Tools
+
+- [reNgine](https://github.com/yogeshojha/rengine)
+- [Osmedeus](https://github.com/j3ssie/Osmedeus)
+- [reconftw](https://github.com/six2dez/reconftw)
+
+## Checklist Summary
+
+<Note>
+By the end of external recon you should have:
+
+1. All **companies** inside the scope
+2. All **assets** belonging to those companies (with basic vuln scans if in scope)
+3. All **domains** belonging to the companies
+4. All **subdomains** (check for subdomain takeovers!)
+5. All **IPs** from CDN and non-CDN sources
+6. All **web servers** with screenshots (anything weird?)
+7. Potential **public cloud assets**
+8. **Emails**, **credential leaks**, and **secret leaks**
+</Note>
+
+## References
+
+- [The Bug Hunter's Methodology v4.0 - Recon Edition by @Jhaddix](https://www.youtube.com/watch?v=p4JgIu1mceI)

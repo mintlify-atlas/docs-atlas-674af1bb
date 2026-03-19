@@ -1,0 +1,219 @@
+---
+title: "macOS Useful Commands"
+description: "Essential macOS commands for penetration testing: system enumeration, process analysis, network profiling, and automated discovery tools"
+---
+
+## Overview
+
+macOS provides a mix of standard Unix tools and Apple-specific utilities. This reference covers the most useful commands for security assessments and post-exploitation on macOS systems.
+
+## Automated Enumeration Tools
+
+<CardGroup cols={3}>
+  <Card title="MacPEAS" icon="magnifying-glass" href="https://github.com/carlospolop/PEASS-ng/tree/master/linPEAS">
+    The macOS version of PEASS — automated privilege escalation enumeration for Mac.
+  </Card>
+  <Card title="Metasploit enum_osx" icon="bug" href="https://github.com/rapid7/metasploit-framework/blob/master/modules/post/osx/gather/enum_osx.rb">
+    Metasploit post-exploitation module for macOS enumeration.
+  </Card>
+  <Card title="SwiftBelt" icon="swift" href="https://github.com/cedowens/SwiftBelt">
+    macOS enumeration tool written in Swift for operational security.
+  </Card>
+</CardGroup>
+
+## System Information
+
+```bash
+# Basic system info
+date
+uptime
+w                                    # Logged-in users
+whoami
+uname -a
+system_profiler SPSoftwareDataType   # OS info
+
+# Hardware and resources
+system_profiler SPHardwareDataType   # Hardware info
+sysctl -a                            # Kernel configuration
+diskutil list                        # Connected drives
+df -h                                # Disk usage
+
+# Services and tasks
+launchctl list                       # List all LaunchDaemon/LaunchAgent services
+atq                                  # List "at" tasks for current user
+nettop                               # Network usage by process (top-style)
+```
+
+## Comprehensive system_profiler Commands
+
+```bash
+system_profiler SPPrintersDataType       # Printers
+system_profiler SPApplicationsDataType  # Installed applications
+system_profiler SPFrameworksDataType     # Installed frameworks
+system_profiler SPDeveloperToolsDataType # Developer tools info
+system_profiler SPStartupItemDataType    # Startup items
+system_profiler SPNetworkDataType        # Network capabilities
+system_profiler SPFirewallDataType       # Firewall status
+system_profiler SPNetworkLocationDataType # Known networks
+system_profiler SPBluetoothDataType      # Bluetooth info
+system_profiler SPEthernetDataType       # Ethernet info
+system_profiler SPUSBDataType            # USB devices
+system_profiler SPAirPortDataType        # Airport/WiFi info
+```
+
+## Searching for Interesting Files
+
+```bash
+# Find files containing a specific word (Spotlight)
+mdfind password
+
+# Find files by name containing a word
+mdfind -name password
+
+# Open app hidden (useful for stealth)
+open -a <Application Name> --hide
+open some.doc -a TextEdit
+```
+
+## Network Commands
+
+```bash
+# ARP table
+arp -i en0 -l -a
+
+# Open network connections
+lsof -i -P -n | grep LISTEN
+
+# SMB shares
+smbutil statshares -a
+
+# Network services management
+networksetup -listallnetworkservices
+networksetup -listallhardwareports
+networksetup -getinfo Wi-Fi
+networksetup -getautoproxyurl Wi-Fi
+networksetup -getwebproxy Wi-Fi
+networksetup -getftpproxy Wi-Fi
+```
+
+## User Process Enumeration
+
+```bash
+# All running services for a specific user domain
+launchctl print gui/<users_UID>
+
+# All running services under root
+launchctl print system
+
+# Details for a specific agent
+launchctl print gui/<user_UID>/com.company.launchagent.label
+```
+
+## Installed Software and Services
+
+```bash
+system_profiler SPApplicationsDataType   # GUI apps
+system_profiler SPFrameworksDataType     # Frameworks
+lsappinfo list                           # Installed apps (alternative)
+launchctl list                           # Running services
+```
+
+## Miscellaneous Useful Commands
+
+```bash
+# Prevent sleep
+caffeinate &
+
+# Take screenshot (asks for permission)
+screencapture -x /tmp/ss.jpg
+
+# Clipboard contents
+pbpaste
+
+# Make macOS speak (useful for presence testing)
+say hello -v diego
+
+# Flush DNS cache
+dscacheutil -flushcache
+sudo killall -HUP mDNSResponder
+```
+
+## Privileged Operations
+
+```bash
+# Purge RAM
+sudo purge
+
+# Enable/disable SSH
+sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist   # enable
+sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist    # disable
+
+# Start/stop Apache
+sudo apachectl start
+sudo apachectl stop
+sudo apachectl restart
+# Web root: /Library/WebServer/Documents/
+```
+
+## Homebrew Package Management
+
+```bash
+brew list              # List installed packages
+brew search <text>     # Search for a package
+brew info <formula>    # Info about a package
+brew install <formula>
+brew uninstall <formula>
+brew cleanup           # Remove older versions
+```
+
+## Anti-Analysis / VM Detection Check
+
+Some macOS malware and stealers use `system_profiler` to detect virtual machine environments and abort execution to evade sandboxes:
+
+```bash
+# Common VM detection snippet seen in macOS stealers
+if system_profiler SPHardwareDataType SPDisplaysDataType | grep -Eiq 'qemu|kvm|vmware|virtualbox'; then
+  exit 100
+fi
+```
+
+<Note>
+Malware may exit with a specific exit code (e.g., 100) to signal sandbox detection to the operator, helping distinguish sandbox runs from real victim execution.
+</Note>
+
+## Quick Security Assessment Commands
+
+```bash
+# Check SIP status
+csrutil status
+
+# Check Gatekeeper status
+spctl --status
+
+# List loaded kernel extensions
+kextstat | grep -v com.apple
+
+# Check running processes with their full paths
+ps aux | grep -v "^root" | awk '{print $11}' | sort -u
+
+# List all Launch Daemons (system-wide persistence)
+ls /Library/LaunchDaemons/
+ls /System/Library/LaunchDaemons/
+
+# List Launch Agents (user-level persistence)
+ls ~/Library/LaunchAgents/
+ls /Library/LaunchAgents/
+ls /System/Library/LaunchAgents/
+
+# Check for login items
+osascript -e 'tell application "System Events" to get the name of every login item'
+
+# FileVault status
+fdesetup status
+```
+
+## References
+
+- [2025: The Year of the Infostealer — Pentest Partners](https://www.pentestpartners.com/security-blog/2025-the-year-of-the-infostealer/)
+- [MacPEAS](https://github.com/carlospolop/PEASS-ng/tree/master/linPEAS)
+- [SwiftBelt](https://github.com/cedowens/SwiftBelt)

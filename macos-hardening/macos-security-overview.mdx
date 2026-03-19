@@ -1,0 +1,122 @@
+---
+title: "macOS Security Overview"
+description: "Overview of macOS security architecture, attack surface, file permissions, TCC/SIP privilege escalation, and MDM management"
+---
+
+## Overview
+
+macOS presents a unique attack surface combining Unix foundations with Apple-specific security frameworks including TCC, SIP, Gatekeeper, and XProtect. Understanding these mechanisms is essential for both offensive security assessments and hardening.
+
+<Warning>
+This content is for authorized penetration testing and security research. Always obtain written permission before assessing any macOS system.
+</Warning>
+
+## macOS Fundamentals
+
+<CardGroup cols={2}>
+  <Card title="Files and Permissions" icon="folder">
+    macOS uses a hybrid permission model combining POSIX permissions, ACLs, and extended attributes including quarantine flags.
+  </Card>
+  <Card title="AppleFS (APFS)" icon="hard-drive">
+    Apple File System provides snapshots, clones, encryption, and space sharing — all relevant to forensics and privilege escalation.
+  </Card>
+  <Card title="XNU Kernel Architecture" icon="microchip">
+    The XNU kernel combines Mach microkernel with BSD layer, providing the foundation for all macOS security controls.
+  </Card>
+  <Card title="Network Protocols" icon="network-wired">
+    macOS supports Apple-specific protocols including Bonjour/mDNS, AirDrop, and AirPlay, each with its own attack surface.
+  </Card>
+</CardGroup>
+
+## macOS MDM (Mobile Device Management)
+
+In enterprise environments, macOS systems are almost always managed by an MDM solution. From an attacker's perspective:
+
+- **JAMF Pro:** `jamf checkJSSConnection` — check MDM connectivity
+- **Kandji** — cloud-native MDM used in many modern enterprises
+
+An MDM can:
+- Install/remove applications and profiles
+- Create local admin accounts
+- Set firmware passwords and change FileVault keys
+- Query device state and execute scripts
+
+### MDM as a C2
+
+A rogue MDM can be used as a command-and-control channel:
+
+```bash
+# Enroll a device in your own MDM
+# Requires: CSR signed by a vendor (try https://mdmcert.download/)
+# Run your own MDM: https://github.com/micromdm/micromdm
+
+# After enrollment, the device trusts the MDM's SSL cert as a CA
+# You can now sign arbitrary payloads
+
+# Deliver mobileconfig enrollment file
+# pkg file containing the mobileconfig → downloaded from Safari → auto-decompressed
+```
+
+## Attack Surface
+
+### File Permission Vulnerabilities
+
+If a **process running as root** writes a file that can be controlled by a user, privilege escalation is possible in these scenarios:
+
+- The file was already created/owned by the user
+- The file is writable by the user via group membership
+- The file is inside a directory owned by the user
+- The file is in a directory where the user has group write access
+
+### File Extension and URL Scheme Handlers
+
+Unusual applications registered as handlers for file extensions or URL schemes can be abused — different applications can register to open specific protocols, creating potential for social engineering and sandbox escapes.
+
+## macOS TCC / SIP Privilege Escalation
+
+macOS applications and binaries have granular **permissions (entitlements)** that control access to sensitive features:
+
+- **TCC (Transparency, Consent, and Control)** — manages app access to: Full Disk, Camera, Microphone, Contacts, Location, Photos
+- **SIP (System Integrity Protection)** — prevents even root from modifying system files and processes
+
+<Note>
+A successful macOS compromise typically requires either escalating TCC privileges, bypassing SIP, or both. Most modern attacks chain multiple vulnerabilities to achieve this.
+</Note>
+
+### How TCC Privileges are Granted
+
+1. **Entitlements** — signed into the application at build time
+2. **User consent** — user approves via system prompt, stored in TCC databases
+3. **Inheritance** — child processes may inherit parent's TCC privileges
+
+### TCC Database Locations
+
+```bash
+# User TCC database
+~/Library/Application Support/com.apple.TCC/TCC.db
+
+# System TCC database (requires FDA)
+/Library/Application Support/com.apple.TCC/TCC.db
+```
+
+## Traditional macOS Privilege Escalation
+
+Beyond TCC/SIP, classic Unix privilege escalation techniques apply. Most Linux privesc methods work on macOS too, with macOS-specific additions:
+
+- Sudo PATH hijacking (macOS preserves user PATH for sudo)
+- Dock impersonation / social engineering for password capture
+- LaunchDaemon and LaunchAgent plist abuse
+- Authorization plugin injection
+- Vulnerable `.pkg` installer abuse
+
+## macOS Compliance Resources
+
+For hardening against CIS and NIST standards:
+
+- [macOS Security Compliance Project (NIST)](https://github.com/usnistgov/macos_security)
+
+## References
+
+- [OS X Incident Response: Scripting and Analysis](https://www.amazon.com/OS-Incident-Response-Scripting-Analysis-ebook/dp/B01FHOHHVS)
+- [The Art of Mac Malware](https://taomm.org/vol1/analysis.html)
+- [SentinelOne Mac Security Guide](https://assets.sentinelone.com/c/sentinal-one-mac-os-)

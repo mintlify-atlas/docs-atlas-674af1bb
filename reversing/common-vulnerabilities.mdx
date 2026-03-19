@@ -1,0 +1,167 @@
+---
+title: "Common Vulnerabilities in Reversing"
+description: "Patterns to look for when reversing malware or CTF binaries: malware APIs, injection techniques, hooking, anti-analysis, and obfuscation."
+---
+
+When reversing malware or vulnerability-research targets you will encounter recurring patterns. Recognising them saves significant analysis time.
+
+## Windows API patterns
+
+Malware on Windows relies heavily on a small set of Win32 APIs. Recognising the import table or dynamic resolution of these names is often the first step in understanding what a sample does.
+
+### Networking
+
+| Raw Sockets | WinAPI (Winsock) |
+|---|---|
+| `socket()` | `WSAStartup()` |
+| `bind()` | `bind()` |
+| `connect()` | `connect()` |
+| `recv()` | `recv()` |
+| `send()` | `send()` |
+| `shutdown()` | `WSACleanup()` |
+
+<Note>
+Many modern loaders wrap their TCP stream in `SslStream` and pin the server certificate against an embedded copy. Bot payloads are often GZip-compressed and fragmented into ~16 KB chunks to evade size-based heuristics.
+</Note>
+
+### Persistence
+
+| Registry | File system | Services |
+|---|---|---|
+| `RegCreateKeyEx` | `GetTempPath` | `OpenSCManager` |
+| `RegSetValueEx` | `CopyFile` | `CreateService` |
+| `RegOpenKeyEx` | `CreateFile` / `WriteFile` | `StartServiceCtrlDispatcher` |
+
+### Stealth and injection
+
+| API | Purpose |
+|---|---|
+| `VirtualAllocEx` | Allocate memory in remote process |
+| `WriteProcessMemory` | Write payload into remote process |
+| `CreateRemoteThread` | Start a thread in remote process (DLL injection) |
+| `NtUnmapViewOfSection` | Hollow out a suspended process |
+| `SetThreadContext` | Redirect EIP/RIP in suspended thread |
+| `ResumeThread` | Resume execution after hollowing |
+
+## Injection techniques
+
+### DLL injection
+
+1. Find the target PID: `CreateToolhelp32Snapshot` + `Process32Next`
+2. Open the process: `OpenProcess`
+3. Write DLL path: `VirtualAllocEx` + `WriteProcessMemory`
+4. Call `LoadLibrary` remotely: `CreateRemoteThread` with `LoadLibraryA` as the start routine
+
+### Process hollowing (RunPE)
+
+Launches a legitimate process suspended, removes its image, and maps a malicious PE in its place. The malicious code runs under the cover of a signed Microsoft binary.
+
+<Steps>
+  <Step title="Create suspended process">
+    ```c
+    CreateProcessA("C:\\Windows\\System32\\svchost.exe",
+                   NULL, NULL, NULL, FALSE, CREATE_SUSPENDED,
+                   NULL, NULL, &si, &pi);
+    ```
+  </Step>
+  <Step title="Unmap original image">
+    `NtUnmapViewOfSection(pi.hProcess, originalBase);`
+  </Step>
+  <Step title="Allocate and write payload">
+    `VirtualAllocEx` at the same base, then `WriteProcessMemory` for headers and each section.
+  </Step>
+  <Step title="Redirect instruction pointer and resume">
+    ```c
+    ctx.Rip = newBase + payload_pe->OptionalHeader.AddressOfEntryPoint;
+    SetThreadContext(pi.hThread, &ctx);
+    ResumeThread(pi.hThread);
+    ```
+  </Step>
+</Steps>
+
+**Detection**: Alert on `CREATE_SUSPENDED` processes that are immediately followed by `NtUnmapViewOfSection → VirtualAllocEx → WriteProcessMemory` across process boundaries.
+
+### Reflective DLL injection
+
+The DLL is mapped directly into memory (not via `LoadLibrary`). A bootstrap function inside the DLL resolves its own imports, fixes relocations, and calls `DllMain`. No path is written to disk.
+
+### Thread hijacking
+
+1. Snapshot threads: `CreateToolhelp32Snapshot` + `Thread32First`
+2. Suspend target thread: `SuspendThread`
+3. Write payload: `VirtualAllocEx` + `WriteProcessMemory`
+4. Set context to point at payload: `SetThreadContext`
+5. Resume: `ResumeThread`
+
+## Hooking techniques
+
+| Hook type | How it works | Detection difficulty |
+|---|---|---|
+| **SSDT hook** | Replaces kernel function pointers in the System Service Descriptor Table | Hard — requires kernel-mode detection |
+| **IAT hook** | Overwrites entries in the Import Address Table to redirect calls | Medium — compare IAT vs PE headers |
+| **EAT hook** | Overwrites Export Address Table entries of a DLL | Medium |
+| **Inline hook** | Patches the first bytes of a function with a `JMP` to a trampoline | Hard — requires byte-level comparison |
+| **IRP hook** | Replaces function pointers in a driver’s I/O Request Packet dispatch table | Hard |
+
+## Anti-analysis tricks
+
+### Anti-debugging
+
+```c
+// User-mode checks
+if (IsDebuggerPresent()) exit(0);
+
+// RDTSC timing: if two reads are too far apart, a debugger is pausing execution
+unsigned long long t1 = __rdtsc();
+do_something();
+unsigned long long t2 = __rdtsc();
+if (t2 - t1 > THRESHOLD) exit(0);
+
+// Self-PTRACE (Linux): a process can only be traced by one debugger at a time
+if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1) exit(0);
+```
+
+### Locale / keyboard layout guards
+
+Many stealers abort on CIS-country locales:
+
+```c
+LCID lcid = GetSystemDefaultLangID();
+LANGID lang = PRIMARYLANGID(lcid);
+// Exit if language is Russian, Ukrainian, Belarusian, etc.
+if (lang == LANG_RUSSIAN || lang == LANG_UKRAINIAN) ExitProcess(0);
+```
+
+### Emulator fingerprinting
+
+Some malware detects Microsoft Defender’s internal emulator by scanning for its exported function names at runtime:
+
+```c
+// Canary exports from Defender’s emulator:
+// MpVmp32Entry, VFS_Open, VFS_Read, ThrdMgr_GetCurrentThreadHandle
+if (GetProcAddress(GetModuleHandleA(NULL), "MpVmp32Entry"))
+    Sleep(1800000);  // sleep 30 minutes to waste sandbox time
+```
+
+### Common packing patterns
+
+A packed binary typically:
+1. Has a tiny `.text` section with a short stub
+2. Allocates an RWX memory region with `VirtualAlloc`
+3. Copies compressed/encrypted data into it
+4. Decrypts/decompresses in place
+5. Jumps to the unpacked entry point
+
+**Approach**: Set a breakpoint just before the final JMP, then dump the unpacked PE from memory.
+
+## Encryption in malware
+
+Common encryption API usage patterns:
+
+| API | Purpose |
+|---|---|
+| `CryptAcquireContext` | Get handle to cryptographic provider |
+| `CryptDeriveKey` | Derive key from a passphrase |
+| `CryptDecrypt` | Decrypt data using the derived key |
+
+Strings are often RC4 or XOR encrypted on a per-string basis, only decrypted immediately before use, to prevent static analysis from extracting IOCs.

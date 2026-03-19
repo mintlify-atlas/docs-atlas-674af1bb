@@ -1,0 +1,239 @@
+---
+title: "Brute Force CheatSheet"
+description: "Comprehensive brute-force reference for dozens of services, default credentials, custom wordlist generation, hash cracking, and tools like Hydra, Hashcat, Medusa, and Legba."
+---
+
+## Default Credentials
+
+Always start by trying default credentials before launching a full brute-force attack:
+
+- [DefaultCreds-cheat-sheet](https://github.com/ihebski/DefaultCreds-cheat-sheet)
+- [cirt.net/passwords](https://www.cirt.net/passwords)
+- [many-passwords.github.io](https://many-passwords.github.io)
+- [SecLists Default Credentials](https://github.com/danielmiessler/SecLists/blob/master/Passwords/Default-Credentials/default-passwords.csv)
+
+## Creating Custom Dictionaries
+
+### Crunch
+
+```bash
+crunch 4 6 0123456789ABCDEF -o crunch1.txt  # Length 4-6, hex chars
+crunch 4 4 -f /usr/share/crunch/charset.lst mixalpha  # Exactly length 4
+crunch 6 8 -t ,@@^^%%  # Pattern: uppercase, lower, lower, special, special, digit, digit
+```
+
+### CeWL — Website Wordlist Generator
+
+```bash
+cewl example.com -m 5 -w words.txt  # Min length 5, from target site
+```
+
+### CUPP — Profile-Based Passwords
+
+```bash
+python3 cupp.py -h  # Interactive mode based on target's personal info
+```
+
+### Wister
+
+```bash
+python3 wister.py -w jane doe 2022 summer madrid 1998 -c 1 2 3 4 5 -o wordlist.lst
+```
+
+### Recommended Wordlists
+
+- [SecLists](https://github.com/danielmiessler/SecLists)
+- [rockyou.txt](https://crackstation.net/crackstation-wordlist-password-cracking-dictionary.htm)
+- [Kaonashi](https://github.com/kaonashi-passwords/Kaonashi)
+- [Assetnote Wordlists](https://wordlists.assetnote.io/)
+
+## Services — Brute Force Commands
+
+<AccordionGroup>
+  <Accordion title="SSH">
+    ```bash
+    hydra -l root -P passwords.txt [-t 32] <IP> ssh
+    ncrack -p 22 --user root -P passwords.txt <IP> [-T 5]
+    medusa -u root -P 500-worst-passwords.txt -h <IP> -M ssh
+    legba ssh --username admin --password wordlists/passwords.txt --target localhost:22
+
+    # Key-based brute force
+    legba ssh --username admin --password '@/some/path/*' --ssh-auth-mode key --target localhost:22
+    ```
+  </Accordion>
+
+  <Accordion title="FTP">
+    ```bash
+    hydra -l root -P passwords.txt [-t 32] <IP> ftp
+    ncrack -p 21 --user root -P passwords.txt <IP> [-T 5]
+    medusa -u root -P 500-worst-passwords.txt -h <IP> -M ftp
+    legba ftp --username admin --password wordlists/passwords.txt --target localhost:21
+    ```
+  </Accordion>
+
+  <Accordion title="HTTP Basic Auth">
+    ```bash
+    hydra -L users.txt -P passwords.txt sizzle.htb.local http-get /certsrv/
+    medusa -h <IP> -u <username> -P passwords.txt -M http -m DIR:/path/to/auth -T 10
+    legba http.basic --username admin --password wordlists/passwords.txt --target http://localhost:8888/
+    ```
+  </Accordion>
+
+  <Accordion title="HTTP POST Form">
+    ```bash
+    hydra -L users.txt -P passwords.txt domain.htb http-post-form \
+      "/path/index.php:name=^USER^&password=^PASS^&enter=Sign+in:Login name or password is incorrect"
+
+    # For HTTPS use https-post-form
+    ```
+  </Accordion>
+
+  <Accordion title="RDP">
+    ```bash
+    ncrack -vv --user <User> -P pwds.txt rdp://<IP>
+    hydra -V -f -L userlist -P passlist rdp://<IP>
+    legba rdp --target localhost:3389 --username admin --password data/passwords.txt
+    ```
+  </Accordion>
+
+  <Accordion title="SMB">
+    ```bash
+    nmap --script smb-brute -p 445 <IP>
+    hydra -l Administrator -P words.txt 192.168.1.12 smb -t 1
+    legba smb --target share.company.com --username admin --password data/passwords.txt
+    ```
+  </Accordion>
+
+  <Accordion title="MySQL">
+    ```bash
+    hydra -L usernames.txt -P pass.txt <IP> mysql
+    medusa -h <IP> -u <username> -P password_list -M mysql
+    legba mysql --username root --password wordlists/passwords.txt --target localhost:3306
+    ```
+  </Accordion>
+
+  <Accordion title="MSSQL">
+    ```bash
+    # MSSQLPwner
+    mssqlpwner hosts.txt brute -ul users.txt -pl passwords.txt
+    legba mssql --username SA --password wordlists/passwords.txt --target localhost:1433
+    ```
+  </Accordion>
+
+  <Accordion title="PostgreSQL">
+    ```bash
+    hydra -L user.txt -P pass.txt <IP> postgres
+    ncrack -U user.txt -P pass.txt <IP>:5432
+    legba pgsql --username admin --password wordlists/passwords.txt --target localhost:5432
+    ```
+  </Accordion>
+
+  <Accordion title="SMTP">
+    ```bash
+    hydra -l <username> -P /path/to/passwords.txt <IP> smtp -V
+    hydra -l <username> -P /path/to/passwords.txt -s 587 <IP> -S -v -V
+    legba smtp --username admin@example.com --password wordlists/passwords.txt --target localhost:25
+    ```
+  </Accordion>
+
+  <Accordion title="VNC">
+    ```bash
+    hydra -L user.txt -P pass.txt -s <PORT> <IP> vnc
+    medusa -h <IP> -u root -P pass.txt -M vnc
+    nmap -p 5900,5901 --script vnc-brute --script-args brute.credfile=wordlist.txt <IP>
+    legba vnc --target localhost:5901 --password data/passwords.txt
+    ```
+  </Accordion>
+
+  <Accordion title="LDAP">
+    ```bash
+    nmap --script ldap-brute -p 389 <IP>
+    legba ldap --target 127.0.0.1:389 --username admin --password @wordlists/passwords.txt --ldap-domain example.org
+    ```
+  </Accordion>
+
+  <Accordion title="Telnet">
+    ```bash
+    hydra -l root -P passwords.txt [-t 32] <IP> telnet
+    legba telnet --username admin --password wordlists/passwords.txt --target localhost:23 \
+      --telnet-user-prompt "login: " --telnet-pass-prompt "Password: "
+    ```
+  </Accordion>
+
+  <Accordion title="SNMP">
+    ```bash
+    nmap -sU --script snmp-brute <target>
+    onesixtyone -c /usr/share/metasploit-framework/data/wordlists/snmp_default_pass.txt <IP>
+    hydra -P /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt target.com snmp
+    ```
+  </Accordion>
+
+  <Accordion title="JWT">
+    ```bash
+    hashcat -m 16500 -a 0 jwt.txt rockyou.txt
+    john jwt.txt --wordlist=wordlists.txt --format=HMAC-SHA256
+    python3 jwt_tool.py -d wordlists.txt <JWT_token>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Hash Cracking — Local
+
+### Online Cracking Databases
+
+- [crackstation.net](https://crackstation.net) — MD5, NTLM, SHA1, SHA256, SHA512
+- [onlinehashcrack.com](https://www.onlinehashcrack.com) — Hashes, WPA2, archives
+- [shuck.sh](https://shuck.sh/get-shucking.php) — MSCHAPv2/NetNTLMv1
+- [gpuhash.me](https://gpuhash.me)
+
+### Hashcat
+
+```bash
+# Wordlist attack with rules
+hashcat -a 0 -m 1000 ntlm.txt rockyou.txt -r rules/best64.rule
+
+# Mask attack (uppercase + 6 lowercase + digit)
+hashcat -a 3 -m 1000 ntlm.txt ?u?l?l?l?l?l?l?d
+
+# Combinator attack (combine two wordlists)
+hashcat -a 1 -m 1000 ntlm.txt wordlist1.txt wordlist2.txt
+
+# Common hash modes
+# 1000  = NTLM
+# 1800  = sha512crypt (Linux $6$)
+# 3200  = bcrypt
+# 13100 = Kerberoast (TGS-REP)
+# 16800 = WPA-PMKID-PBKDF2
+# 22000 = WPA-PBKDF2-PMKID+EAPOL
+```
+
+### John the Ripper
+
+```bash
+john --wordlist=/usr/share/wordlists/rockyou.txt hash.txt
+john --wordlist=words.txt --rules --stdout > w_mutated.txt
+john --format=krb5tgs --wordlist=passwords_kerb.txt hashes.kerberoast
+```
+
+### Archive and File Cracking
+
+```bash
+# ZIP
+fcrackzip -u -D -p '/usr/share/wordlists/rockyou.txt' chall.zip
+zip2john file.zip > zip.john && john zip.john
+
+# PDF
+pdfcrack encrypted.pdf -w /usr/share/wordlists/rockyou.txt
+
+# KeePass
+keepass2john file.kdbx > hash
+john --wordlist=/usr/share/wordlists/rockyou.txt hash
+
+# LUKS disk encryption
+bruteforce-luks -f ./list.txt ./backup.img
+hashcat -m 14600 -a 0 luckshash wordlists/rockyou.txt
+```
+
+## References
+
+- [Inside GoBruteforcer: AI-generated server defaults, weak passwords, and crypto-focused campaigns](https://research.checkpoint.com/2026/inside-gobruteforcer-ai-generated-server-defaults-weak-passwords-and-crypto-focused-campaigns/)

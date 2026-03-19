@@ -1,0 +1,198 @@
+---
+title: "macOS Security Protections"
+description: "Deep dive into macOS security mechanisms: Gatekeeper, SIP, Sandbox, TCC, Launch Constraints, MRT, and Background Task Management"
+---
+
+## Overview
+
+macOS implements a layered defense-in-depth security model. Understanding each layer is essential for both bypassing them during authorized assessments and configuring them properly for hardening.
+
+<Warning>
+This content is for authorized security research and hardening purposes only.
+</Warning>
+
+## Gatekeeper
+
+Gatekeeper is the combination of three macOS security modules that work together to prevent execution of potentially malicious downloaded software:
+
+<CardGroup cols={3}>
+  <Card title="Quarantine" icon="flag">
+    Marks downloaded files with a `com.apple.quarantine` extended attribute. Files with this attribute trigger Gatekeeper checks when opened.
+  </Card>
+  <Card title="Gatekeeper" icon="shield-check">
+    Verifies code signatures and notarization for quarantined applications. Blocks unsigned or un-notarized apps by default.
+  </Card>
+  <Card title="XProtect" icon="virus-slash">
+    Apple's built-in malware scanner. Checks files as they are downloaded against known malware signatures and blocks opening if matched.
+  </Card>
+</CardGroup>
+
+## SIP — System Integrity Protection
+
+SIP prevents modification of system files, directories, and processes — even by root:
+
+```bash
+# Check SIP status
+csrutil status
+
+# SIP-protected paths (cannot be modified even as root)
+/System
+/usr
+/bin
+/sbin
+/private/var/db/sudo
+```
+
+SIP also protects the kernel from unsigned kernel extensions and prevents attachment of debuggers to system processes.
+
+## macOS Sandbox
+
+The macOS Sandbox (Seatbelt) limits applications to **only the resources specified in their sandbox profile**:
+
+- Applications are assigned a profile that defines which files, network connections, and system resources they may access
+- Sandbox profiles are written in a Scheme-like language
+- Third-party App Store apps must be sandboxed
+- Process violations are denied and may be logged to the system console
+
+## TCC — Transparency, Consent, and Control
+
+**TCC** is the framework that manages application access to sensitive features through explicit user consent:
+
+<AccordionGroup>
+  <Accordion title="TCC-Protected Resources">
+    - Full Disk Access (`kTCCServiceSystemPolicyAllFiles`)
+    - Camera (`kTCCServiceCamera`)
+    - Microphone (`kTCCServiceMicrophone`)
+    - Location Services (`kTCCServiceLocation`)
+    - Contacts (`kTCCServiceAddressBook`)
+    - Photos (`kTCCServicePhotos`)
+    - Accessibility (`kTCCServiceAccessibility`)
+    - Screen Recording (`kTCCServiceScreenCapture`)
+  </Accordion>
+
+  <Accordion title="TCC Database Locations">
+    ```bash
+    # User TCC database
+    ~/Library/Application Support/com.apple.TCC/TCC.db
+
+    # System TCC database (requires FDA to read)
+    /Library/Application Support/com.apple.TCC/TCC.db
+    ```
+
+    TCC databases are SQLite files. With appropriate access they can be queried or modified directly.
+  </Accordion>
+
+  <Accordion title="TCC Inheritance">
+    Child processes may inherit TCC permissions from their parent. This has been historically exploited by:
+    - Launching privileged child processes from already-entitled parents
+    - Abusing `NSPredicate` expression injection in entitled daemons
+  </Accordion>
+</AccordionGroup>
+
+## Launch Constraints and Trust Cache
+
+Introduced in macOS Ventura, Launch Constraints regulate process initiation:
+
+- **Self constraints** — rules about who can launch the binary itself
+- **Parent constraints** — rules about what process can be the parent
+- **Responsible constraints** — rules about which process is responsible
+
+Constraints are stored in a **trust cache** embedded in the OS. System binaries are categorized into constraint categories within this cache.
+
+**Environment Constraints** (macOS Sonoma) extend this to third-party apps, helping mitigate injection attacks against apps with strong entitlements.
+
+```bash
+# View trust cache entries (requires SIP-disabled macOS or virtual machine)
+# Trust cache is embedded in the dyld_shared_cache
+```
+
+## MRT — Malware Removal Tool
+
+MRT is the reactive complement to XProtect:
+
+| Tool | Function | When it runs |
+|------|----------|--------------|
+| **XProtect** | Preventative — blocks known malware before opening | On download (via certain apps) |
+| **MRT** | Reactive — removes malware after detection | On system updates, new malware definition downloads |
+
+MRT location: `/Library/Apple/System/Library/CoreServices/MRT.app`
+
+MRT rules are compiled into the binary itself and update automatically with macOS security updates.
+
+## Background Tasks Management (BTM)
+
+Starting with macOS Ventura, BTM alerts users when software uses persistence mechanisms:
+
+```bash
+# Enumerate all background task configurations (always prompts for password)
+sfltool dumpbtm
+
+# Alternative enumeration tool (requires Terminal Full Disk Access)
+chmod +x dumpBTM
+xattr -rc dumpBTM   # Remove quarantine
+./dumpBTM
+```
+
+BTM data is stored at: `/private/var/db/com.apple.backgroundtaskmanagement/BackgroundItems-v4.btm`
+
+### How BTM Monitors Persistence
+
+BTM uses `FSEvents` to watch for modifications to well-known persistence locations (Login Items, Launch Daemons, Launch Agents) and generates `ES_EVENT_TYPE_NOTIFY_BTM_LAUNCH_ITEM_ADD` events when new persistence is detected.
+
+### Bypassing BTM (Offensive)
+
+<AccordionGroup>
+  <Accordion title="Reset the BTM Database">
+    ```bash
+    # Requires root — resets the database
+    # No new persistence is alerted until next reboot
+    sfltool resettbtm
+    ```
+  </Accordion>
+
+  <Accordion title="Stop the BTM Agent">
+    ```bash
+    # Find and stop the monitoring agent
+    pgrep BackgroundTaskManagementAgent
+    # e.g., 1011
+
+    kill -SIGSTOP 1011
+    # Verify it's stopped (T = stopped)
+    ps -o state 1011
+    ```
+  </Accordion>
+
+  <Accordion title="Race Condition">
+    If the process that created the persistence exits immediately after doing so, the BTM daemon fails to retrieve process information and cannot send the alert event. Short-lived persistence installers may not trigger BTM alerts.
+  </Accordion>
+</AccordionGroup>
+
+## MACF — Mandatory Access Control Framework
+
+MACF is the underlying framework that all macOS mandatory access control policies (SIP, Sandbox, TCC) are built on. It provides kernel-level policy enforcement hooks. Key policy modules:
+
+- **Sandbox** — app confinement
+- **AppleMobileFileIntegrity (AMFI)** — code signing enforcement
+- **Endpoint Security** — EDR/antivirus framework
+
+## Security Layer Interaction
+
+```
+User Action
+    ↓
+Gatekeeper (signature + notarization check on first open)
+    ↓
+Launch Constraints (process initiation rules)
+    ↓
+Sandbox (restrict app to its profile)
+    ↓
+TCC (user consent for sensitive resources)
+    ↓
+SIP (kernel-level system integrity protection)
+```
+
+## References
+
+- [Apple Platform Security Guide](https://support.apple.com/guide/security/welcome/web)
+- [Background Task Management documentation](https://support.apple.com/en-gb/guide/deployment/depdca572563/web)
+- [DumpBTM by Objective-See](https://github.com/objective-see/DumpBTM)

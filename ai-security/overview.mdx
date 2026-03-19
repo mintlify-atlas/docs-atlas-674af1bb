@@ -1,0 +1,111 @@
+---
+title: "AI Security Overview"
+description: "Introduction to the threat landscape around AI and machine learning systems: attack surface, key risk frameworks, and the major vulnerability classes in LLMs, model files, and agentic pipelines."
+---
+
+AI and machine learning systems introduce a fundamentally new attack surface. Unlike traditional software, AI systems are trained on data, produce probabilistic outputs, and often integrate with external tools, giving attackers new vectors that do not map cleanly to classic CVE categories.
+
+## The AI attack surface
+
+<CardGroup cols={2}>
+  <Card title="Prompt Injection" icon="syringe" href="/ai-security/prompt-injection">
+    Injecting malicious instructions into LLM prompts to bypass safety rules, leak system prompts, or trigger unintended actions.
+  </Card>
+  <Card title="LLM Attacks" icon="robot" href="/ai-security/llm-attacks">
+    Jailbreaks, model RCE via malicious checkpoints, agentic pipeline exploitation, and MCP server attacks.
+  </Card>
+  <Card title="Model RCE" icon="skull" href="/ai-security/llm-attacks">
+    Loading a malicious model file can execute arbitrary code before any weights are read.
+  </Card>
+  <Card title="AI-Assisted Fuzzing" icon="magnifying-glass">
+    Using LLMs and coverage-guided fuzzing together to discover vulnerabilities at scale.
+  </Card>
+</CardGroup>
+
+## Risk frameworks
+
+The two dominant frameworks for assessing AI system risk are:
+
+### OWASP LLM Top 10
+
+Focused specifically on Large Language Model deployments:
+
+| # | Risk |
+|---|---|
+| LLM01 | Prompt Injection |
+| LLM02 | Insecure Output Handling |
+| LLM03 | Training Data Poisoning |
+| LLM04 | Model Denial of Service |
+| LLM05 | Supply Chain Vulnerabilities |
+| LLM06 | Sensitive Information Disclosure |
+| LLM07 | Insecure Plugin Design |
+| LLM08 | Excessive Agency |
+| LLM09 | Overreliance |
+| LLM10 | Model Theft |
+
+### Google SAIF (Secure AI Framework)
+
+Google’s SAIF provides six core elements:
+1. Expand strong security foundations to the AI ecosystem
+2. Extend detection and response to bring AI into existing security operations
+3. Automate defences to keep pace with existing and new threats
+4. Harmonise platform-level controls to ensure consistent protection
+5. Adapt controls to adjust mitigations and create faster feedback loops
+6. Contextualise AI risk in surrounding business processes
+
+## Threat categories
+
+### Input manipulation
+
+Attackers craft inputs that cause an AI model to produce unintended, harmful, or privacy-violating outputs:
+
+- **Prompt injection**: hiding instructions in user data or external content
+- **Jailbreaks**: using role-play, context switching, or encoding tricks to bypass safety training
+- **Adversarial examples**: imperceptible perturbations that cause image classifiers or other models to misclassify
+
+### Model supply chain
+
+Machine learning models are shared as files (`.pkl`, `.pt`, `.ckpt`, `.h5`, `.onnx`). Many formats use unsafe serialisation:
+
+- **Pickle-based formats** (PyTorch `.pt`/`.ckpt`, scikit-learn) execute arbitrary Python code during loading
+- **Keras Lambda layers** run arbitrary Python at model load time
+- **Hydra metadata in `.nemo`/`.safetensors`** can call arbitrary Python callables via `hydra.utils.instantiate()`
+
+### Agentic pipelines
+
+When an LLM has tools (web browsing, code execution, file access), the attack surface expands dramatically:
+
+- **Indirect prompt injection**: attacker instructions embedded in web pages, documents, or tool outputs that the agent processes
+- **Memory poisoning**: instructing the agent to update persistent memory with malicious behaviour
+- **Tool firewall bypass**: exploiting allow-listed domains (e.g., `raw.githubusercontent.com`) to deliver payloads
+
+### Data poisoning
+
+If an attacker can influence training data, they may insert backdoors — specific trigger inputs that cause the model to behave in a predetermined, malicious way. This is particularly relevant for:
+
+- Models fine-tuned on user-provided data
+- Models trained on scraped web data that an attacker can control
+- Federated learning systems where participants submit gradient updates
+
+## AI-assisted fuzzing
+
+LLMs are increasingly used to *assist attackers and defenders* in vulnerability discovery:
+
+- **Corpus generation**: LLMs generate structurally valid but edge-case inputs for coverage-guided fuzzers
+- **Crash triage**: LLMs classify and prioritise fuzzer crash reports
+- **Code analysis**: LLMs identify potentially vulnerable code patterns at scale
+- **Protocol understanding**: LLMs parse and generate valid protocol messages for network fuzzers
+
+<Note>
+The same LLM-assisted fuzzing capabilities are available to both defenders (who can run them against their own code) and attackers (who can target exposed APIs or closed-source binaries).
+</Note>
+
+## Security testing checklist
+
+- [ ] Test all user-facing LLM inputs for prompt injection
+- [ ] Audit model loading code for use of `pickle.load`, `torch.load(weights_only=False)`, `yaml.unsafe_load`
+- [ ] Verify model files come from trusted, signed sources
+- [ ] Map all tools and external data sources accessible to agentic pipelines
+- [ ] Test indirect prompt injection by placing attacker-controlled content in tool output paths
+- [ ] Review system prompts for unintended disclosure via prompt leaking
+- [ ] Ensure agent actions are scoped to least privilege

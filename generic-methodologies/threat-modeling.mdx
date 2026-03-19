@@ -1,0 +1,135 @@
+---
+title: "Threat Modeling"
+description: "A structured guide to threat modeling methodologies (STRIDE, DREAD, PASTA, VAST, OCTAVE), the CIA Triad, and tools like OWASP Threat Dragon and Microsoft Threat Modeling Tool."
+---
+
+## Overview
+
+Threat modeling is the process of identifying, understanding, and strategizing against potential vulnerabilities in a system. It is used across both **software development** (as part of Secure SDLC) and **penetration testing** (to understand a system's risks before testing).
+
+A threat model is typically represented as a diagram — similar to a **data flow diagram** — but with a security-oriented design. Elements marked in red indicate potential vulnerabilities, risks, or trust boundaries.
+
+## The CIA Triad
+
+The CIA Triad forms the foundation of most security measures and threat modeling methodologies:
+
+<CardGroup cols={3}>
+  <Card title="Confidentiality" icon="eye-slash">
+    Ensuring data or systems are not accessed by unauthorized individuals. Requires access controls, encryption, and data classification.
+  </Card>
+  <Card title="Integrity" icon="shield-check">
+    Accuracy, consistency, and trustworthiness of data over its lifecycle. Involves checksums, hashing, and data verification.
+  </Card>
+  <Card title="Availability" icon="circle-check">
+    Ensuring data and services are accessible to authorized users when needed. Requires redundancy, fault tolerance, and high-availability configurations.
+  </Card>
+</CardGroup>
+
+## Threat Modeling Methodologies
+
+<AccordionGroup>
+  <Accordion title="STRIDE (Microsoft)">
+    An acronym for **Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, and Elevation of Privilege**. Used during the design phase to systematically identify threat categories.
+
+    | Threat | Description |
+    |--------|-------------|
+    | Spoofing | Impersonating another user or system |
+    | Tampering | Modifying data or code |
+    | Repudiation | Denying an action took place |
+    | Information Disclosure | Exposing data to unauthorized parties |
+    | Denial of Service | Making a resource unavailable |
+    | Elevation of Privilege | Gaining unauthorized higher access |
+  </Accordion>
+
+  <Accordion title="DREAD (Microsoft)">
+    A risk-scoring methodology for identified threats. Each factor is scored and combined to prioritize threats:
+
+    - **D**amage potential
+    - **R**eproducibility
+    - **E**xploitability
+    - **A**ffected users
+    - **D**iscoverability
+  </Accordion>
+
+  <Accordion title="PASTA (Process for Attack Simulation and Threat Analysis)">
+    A seven-step **risk-centric** methodology:
+
+    1. Define security objectives
+    2. Identify technical scope
+    3. Application decomposition
+    4. Threat analysis
+    5. Vulnerability analysis
+    6. Attack modeling
+    7. Risk and triage assessment
+  </Accordion>
+
+  <Accordion title="Trike">
+    A **risk-based** methodology that starts from a risk management perspective and examines threats and vulnerabilities in terms of asset defense.
+  </Accordion>
+
+  <Accordion title="VAST (Visual, Agile, and Simple Threat Modeling)">
+    Designed to integrate into **Agile development environments**. Combines elements from other methodologies and emphasizes **visual representations** of threats.
+  </Accordion>
+
+  <Accordion title="OCTAVE (CERT Coordination Center)">
+    Focused on **organizational risk assessment** rather than specific systems or software. Geared toward understanding risk in the context of mission and business objectives.
+  </Accordion>
+</AccordionGroup>
+
+## Threat Modeling Tools
+
+### OWASP Threat Dragon
+
+An open-source web and desktop application for creating threat models with system diagrams and auto-generated threat/mitigation rules.
+
+<Steps>
+  <Step title="Create a New Project">
+    Open Threat Dragon and create a new project, then launch it.
+  </Step>
+  <Step title="Build Your Diagram">
+    Add entities using the drag-and-drop editor:
+
+    - **Process** — A service, function, or application component (e.g., web server)
+    - **Actor** — A person or external system (e.g., website visitor, administrator)
+    - **Data Flow Line** — Indicates data movement between components
+    - **Trust Boundary** — Network segments or security zones
+    - **Store** — Databases or file systems where data is persisted
+  </Step>
+  <Step title="Add Threats">
+    Select a component layer and create threats. Note: Actor threats only support **Spoofing** and **Repudiation**, while Process threats support all STRIDE categories.
+  </Step>
+  <Step title="Review and Export">
+    Save the model and review the auto-generated threat list with mitigations.
+  </Step>
+</Steps>
+
+### SpiderSuite
+
+[SpiderSuite](https://github.com/3nock/SpiderSuite) is an advanced cross-platform GUI web spider/crawler for attack surface mapping. Use it to crawl target applications and generate data flow inspiration for your threat model:
+
+1. Input a target URL and start crawling.
+2. View the generated graph of discovered endpoints and relationships.
+3. Use the crawl results to identify trust boundaries and data flows for your threat model.
+
+### Microsoft Threat Modeling Tool
+
+A free tool from Microsoft that finds threats in the **design phase** using the STRIDE methodology. Particularly suitable for teams developing on Microsoft's stack.
+
+Download: [https://aka.ms/threatmodelingtool](https://aka.ms/threatmodelingtool)
+
+## When to Use Threat Modeling
+
+<CardGroup cols={2}>
+  <Card title="During Software Development" icon="code">
+    As part of the **Secure Software Development Life Cycle (SSDLC)**, threat modeling in early design phases prevents costly security fixes later.
+  </Card>
+  <Card title="Before Penetration Testing" icon="magnifying-glass">
+    The **PTES (Penetration Testing Execution Standard)** requires threat modeling to understand system vulnerabilities and scope before conducting tests.
+  </Card>
+  <Card title="During Architecture Reviews" icon="sitemap">
+    Use threat models to communicate security risks to engineers and stakeholders, and to document security decisions.
+  </Card>
+  <Card title="After Incidents" icon="triangle-exclamation">
+    Update threat models after security incidents to capture newly discovered attack vectors and validate that controls address root causes.
+  </Card>
+</CardGroup>
